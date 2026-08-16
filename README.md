@@ -4,12 +4,7 @@
 
   <h1>Platter</h1>
 
-  <p><b>Your iPod Classic, without iTunes.</b></p>
-
-  <p>
-    Browse, edit and grow the music library on a click-wheel iPod —<br/>
-    imports, conversion, cover art and listening stats, all in one place.
-  </p>
+  <p><b>iPod without iTunes — a native macOS app that manages your library.</b></p>
 
 <p>
   <img src="https://img.shields.io/badge/macOS-14%2B-black?style=flat&logo=apple&logoColor=white" alt="macOS 14+" />
@@ -29,86 +24,58 @@
     &nbsp;·&nbsp;
     <a href="#build-from-source">Build from source</a>
     &nbsp;·&nbsp;
-    <a href="#safety">Safety</a>
-    &nbsp;·&nbsp;
     <a href="#requirements">Requirements</a>
   </p>
 
-</div>
+  <br/>
 
-> [!NOTE]
-> Platter drives a real iPod Classic through **libgpod** — the same open-source
-> engine gtkpod used — wrapped in a native macOS app. Plug the iPod in, and its
-> library is yours to manage. No iTunes, no Music.app, no cloud.
+  <img src="assets/screenshot.png" width="900" alt="Platter showing an iPod library grouped by album, with seven tracks selected and the tag inspector open" />
+
+</div>
 
 ## Features
 
-### Library
+### Your music, the way you left it
 
-- **Browse** the iPod grouped by artist, album or genre, with cover art and
-  per-album track counts. The list is virtualized — a library of tens of
-  thousands of tracks scrolls without breaking a sweat
-- **Search** as you type across title, artist, album and genre
-- **Edit** one track in the inspector, or select thousands (⌘-click,
-  shift-click, per-artist and per-album select-all) and stamp artist, album,
-  composer or genre across all of them in one apply
-- **Cover art**: set or replace covers for any selection; albums missing art
-  are counted right on their headers
-- **Capacity gauge** shows what's free before and after every import
+- Plug the iPod in and everything on it shows up — grouped by artist, album or
+  genre, cover art and all
+- Search as you type
+- Scrolls smoothly whether you have 80 tracks or 80,000
+- See how much space is free before and after you add anything
 
-### Importing
+### Fix the messy tags
 
-- **Drag and drop** files or folders anywhere on the window
-- **From Drive** scans a whole mounted disk and tells you exactly how many
-  tracks an import would bring in before anything is copied
-- MP3 and M4A/AAC import directly; **FLAC, WAV, AIFF, APE, WavPack, DSD and
-  `.cue` album images are converted to Apple Lossless** automatically, tags
-  and art included
-- Long imports post a system notification when they finish while you're in
-  another app
+- Click a track and edit it, or select a whole album — or a whole artist — and
+  fix the artist, album, composer or genre for all of them at once
+- Add or replace cover art for anything you've selected
+- Albums missing artwork are counted right on their header, so you can see what
+  still needs a cover
 
-### Convert
+### Add music
 
-- A standalone converter to iPod-ready formats — to the device or to a folder,
-  with per-file size estimates, a live log, and formats probed from the
-  bundled ffmpeg so nothing is offered that can't be produced
+- Drag files or folders anywhere onto the window
+- Or point Platter at an external drive and it'll tell you how much it would
+  add before it copies a thing
+- MP3 and AAC go straight on. FLAC, WAV, AIFF, APE, WavPack, DSD and `.cue`
+  albums are converted for you, tags and artwork included
+- Big imports notify you when they're done, so you can go do something else
 
-### Stats
+### Convert on its own
 
-- Lifetime plays, listening time, library coverage and top albums, read from
-  the iPod's own play counts
-- An **activity heatmap** of your listening, and a **share card** rendered to
-  the clipboard as an image
+- A converter you can use by itself — put the result on the iPod or in a
+  folder, see the size before you commit, watch it work
 
-### Devices
+### See what you actually listened to
 
-- Model detection from the iPod's own SysInfo — a Classic shows up as a
-  Classic, with the right glyph and generation
-- Devices Platter positively can't manage (iPhone/iPod Touch, 3rd/4th-gen
-  Shuffle) are shown and labeled rather than hidden
-- Eject from the toolbar; the last-connected iPod reconnects at launch
+- Lifetime plays, hours listened and top albums, taken from the iPod's own
+  counts
+- A heatmap of your listening year, and a share card you can copy as an image
 
-### Settings
+### Make it yours
 
-- Light, dark, or follow-the-system theme
-- Alternate Dock icons
+- Light, dark or match the system
+- Pick a different Dock icon
 - ⌘1 / ⌘2 / ⌘3 switch tabs, ⌘, opens Settings
-
-## Safety
-
-An iPod's database has no undo, so Platter is conservative by design:
-
-- **Paired backups.** The iTunesDB and the device's Play Counts file are
-  backed up together — at connect and again before writes. They are only
-  coherent as a pair, and Platter never copies one without the other
-- **Play counts survive.** Fresh plays recorded by the device are merged, then
-  written back — nothing your iPod counted is lost
-- **Edits coalesce** into a single database write after a short idle window,
-  cutting flash wear; quitting waits for the write to finish
-- **Failures are loud.** A background save that fails raises a persistent
-  alert, not a log line. Crash and error logs land in
-  `~/Library/Logs/com.kolebaev.platter/platter.log` — attach that file to bug
-  reports
 
 ## Installation
 
@@ -121,14 +88,21 @@ same recipe, downloadable with a GitHub account. Or
 [build from source](#build-from-source).
 
 1. Open the `.dmg` and drag Platter to Applications
-2. Open Platter and connect your iPod
-3. Click **Open Privacy Settings** when prompted and enable Platter under
-   **Privacy & Security → Files & Folders → Removable Volumes**, then relaunch
 
-> [!TIP]
-> Builds are ad-hoc signed (no Developer ID), so macOS reports them as
-> "damaged". Clear the quarantine flag once:
-> `xattr -dr com.apple.quarantine /Applications/Platter.app`
+2. Run this once in Terminal:
+
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/Platter.app
+   ```
+
+   Builds are ad-hoc signed rather than notarized, so without this macOS
+   refuses to open the app — "Apple could not verify Platter is free of
+   malware". The command clears the download flag; you only need it once.
+
+3. Open Platter and connect your iPod
+
+4. Click **Open Privacy Settings** when prompted and enable Platter under
+   **Privacy & Security → Files & Folders → Removable Volumes**, then relaunch
 
 ## Build from source
 
@@ -213,10 +187,8 @@ bitrates, `--covers` replaces art in place).
 ## Requirements
 
 - macOS 14 or later, Apple Silicon (no Intel build)
-- A click-wheel iPod in disk mode — Classic 6th/7th generation is the primary
-  target; models with an iTunesDB that libgpod recognizes also work
-- Not supported: iPhone / iPod Touch (SQLite library) and 3rd/4th-generation
-  Shuffle (a different iTunesSD layout)
+- An iPod Classic in disk mode
+- Not supported: iPhone / iPod Touch and 3rd/4th-generation Shuffle
 
 ## Privacy
 
