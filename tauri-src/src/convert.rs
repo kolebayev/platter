@@ -1750,13 +1750,11 @@ pub fn prepare_batch_into(
     let art_cache = ArtCache::new(&art_dir);
     let names = NameReserver::new(out_dir);
 
-    // Half the cores: ffmpeg's ALAC path is single-threaded but the decode +
-    // resample chain still saturates a core; leave headroom for the UI.
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get() / 2)
-        .unwrap_or(4)
-        .clamp(2, 8)
-        .min(items.len());
+    // Two, whatever the machine has. Half the cores left the UI responsive but
+    // not the audio: eight decode+resample chains starve CoreAudio's render
+    // thread, and music playing while a batch runs stutters. Two still halves
+    // the wall clock against a plain queue, which is where most of the win was.
+    let workers = 2.min(items.len());
 
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
