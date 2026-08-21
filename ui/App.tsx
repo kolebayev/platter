@@ -130,6 +130,11 @@ export default function App() {
   useEffect(() => {
     if (view === "convert") setConvertMounted(true);
   }, [view]);
+  /** Paths dropped on the window while Convert is the visible tab, handed to
+   * that tab to stage. Cleared as soon as it has taken them, so the next drop
+   * of the same files is still a new value. */
+  const [convertDrop, setConvertDrop] = useState<string[] | null>(null);
+  const takeConvertDrop = useCallback(() => setConvertDrop(null), []);
   const detailRef = useRef<HTMLDivElement>(null);
 
   // First-run TCC primer: shown once. Declining raises the quiet banner
@@ -158,6 +163,11 @@ export default function App() {
   const isOpen = snapshot.mountPoint !== null;
   const isOpenRef = useRef(isOpen);
   isOpenRef.current = isOpen;
+
+  // Read by the drag-drop handler, which routes by tab and must not
+  // re-subscribe every time the tab changes.
+  const viewRef = useRef(view);
+  viewRef.current = view;
 
   // Logged from the persistence effects rather than the handlers: menu,
   // keyboard shortcut and restore-at-launch all land here, so one line each
@@ -345,21 +355,29 @@ export default function App() {
         setIsDropTarget(true);
       } else if (kind === "drop") {
         setIsDropTarget(false);
+        const paths = event.payload.paths;
+        if (paths.length === 0) return;
+        // A few real paths, not just a count: an import that fails on one file
+        // in a folder is unreproducible without knowing what was dropped.
+        const dropped = `${paths.length} — ${paths.slice(0, 3).join(", ")}${
+          paths.length > 3 ? " …" : ""
+        }`;
+        // On Convert a drop only fills the queue. Format, bitrate and
+        // destination are all still the user's to set when the files land, so
+        // the gesture that imports on Library stages here and stops — nothing
+        // is converted until Convert Files is pressed.
+        if (viewRef.current === "convert") {
+          log.info("drop.staged", dropped);
+          setConvertDrop(paths);
+          return;
+        }
         if (!isOpenRef.current) {
           log.warn("drop.rejected", "no iPod connected");
           setLastError("Connect an iPod before adding songs.");
           return;
         }
-        const paths = event.payload.paths;
-        // A few real paths, not just a count: an import that fails on one file
-        // in a folder is unreproducible without knowing what was dropped.
-        log.info(
-          "drop.files",
-          `${paths.length} — ${paths.slice(0, 3).join(", ")}${paths.length > 3 ? " …" : ""}`,
-        );
-        if (paths.length > 0) {
-          run(api.importFiles(paths)).then(handleImportResult);
-        }
+        log.info("drop.files", dropped);
+        run(api.importFiles(paths)).then(handleImportResult);
       } else {
         setIsDropTarget(false);
       }
@@ -807,6 +825,9 @@ export default function App() {
                 ipodMount={snapshot.mountPoint}
                 onLibraryChanged={reloadLibrary}
                 onProgressChange={setConvertProgress}
+                droppedPaths={convertDrop}
+                onDropStaged={takeConvertDrop}
+                isDropTarget={isDropTarget}
               />
             </Suspense>
           </div>
