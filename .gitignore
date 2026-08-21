@@ -37,9 +37,6 @@ tauri-src/binaries
 # sibling directory, but a checkout-local build must not get committed)
 ffmpeg-lgpl/
 
-# Session-local Claude Code permissions; .claude/CLAUDE.md stays tracked
-.claude/settings.local.json
-
 # Secrets and machine-local config (signing identities, notarization profiles)
 .env
 .env.*
@@ -48,6 +45,11 @@ ffmpeg-lgpl/
 *.tsbuildinfo
 
 docs
+
+# Claude Code's working directory: agent notes, product brief, local docs and
+# session-local permissions. Local only — CLAUDE.md was tracked until Aug 2026,
+# and a gitignore entry alone would not have untracked it.
 .claude
+
 # Mock-device tooling, local only
 scripts/make-mock-devices.sh
