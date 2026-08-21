@@ -61,6 +61,58 @@ a hand-written C bridge. macOS only.
   so `dev` never produces a build artifact either. Tag from `main` for a
   release, as before.
 
+## Shipping updates
+
+- The app checks GitHub Releases on every launch through
+  `tauri-plugin-updater`, reading
+  `/releases/latest/download/latest.json`. The check runs in Rust, not the
+  webview: the CSP allows no origin but `'self'`, and widening `connect-src`
+  to reach GitHub would open that door for the whole UI.
+- **`bundle.createUpdaterArtifacts` is deliberately off.** Tauri's own updater
+  archive is produced inside `tauri build` — before `bundle-dylibs.sh` has
+  copied a single dylib — so it would carry the app that still links
+  `~/.local` and `/opt/homebrew`. It installs fine and then dies in dyld on the
+  user's machine, with no way back. `bundle-dylibs.sh` packs
+  `Platter.app.tar.gz` itself, after re-signing, for the same reason it repacks
+  the DMG.
+- The minisign keypair is **not** the code-signing identity. Public half lives
+  in `tauri.conf.json` (`plugins.updater.pubkey`), private half in
+  `~/.tauri/platter.key` and in the `TAURI_SIGNING_PRIVATE_KEY` repo secret. It
+  has no password, so nothing sets `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — but
+  `bundle-dylibs.sh` exports it empty anyway, because with the variable absent
+  the CLI prompts on a TTY and hangs a runner forever. Lose the key and no
+  installed copy can ever be updated again; a new key only reaches users who
+  download a fresh DMG by hand.
+- A local `npm run bundle` with no key set still builds the archive, unsigned.
+  The updater refuses it — that is the intent, not a gap.
+- **Never press Install in `npm run tauri dev`.** There is no `.app` around the
+  dev binary for the updater to replace, so it treats `target/debug` as the
+  bundle and unpacks `Platter.app/Contents` straight over it — the entire debug
+  artifact cache is gone and the next run is a full rebuild. `relaunch()` then
+  fails with `No such file or directory (os error 2)`, because the executable
+  it was about to start no longer exists. Nothing outside `target/` is touched.
+  To exercise the update path for real, bundle a build and install it to
+  /Applications first.
+- **Publishing the draft release is the switch that ships an update.** A draft
+  is never `/releases/latest` and its assets are not publicly downloadable, so
+  every installed copy stays on the old version until you press Publish.
+  release.yml fails the build outright if the `.sig` is missing rather than
+  drafting a release the updater could never use.
+- `latest.json` is written by **updater-feed.yml**, on `release: published` —
+  not alongside the DMG. It has to carry the release notes, and those are typed
+  into the draft long after the tag build finished. Editing a published
+  release's notes and re-running that workflow rewrites the feed in place
+  (`gh release upload --clobber`).
+- The release body carries a `<!-- update-notes-end -->` marker. Everything
+  **above** it becomes the notes in the app's update dialog; everything below
+  is first-install instructions. Nobody updating from inside Platter needs to
+  be told to run `xattr` — the quarantine flag is set by browsers, and that
+  copy arrives through the app. The dialog renders the text verbatim and never
+  as markup, deliberately: it comes off the network. Write plain lines.
+- For roughly a minute after Publish the feed 404s, until updater-feed.yml
+  uploads it. `checkForUpdate` swallows that and retries next launch — better
+  than serving a feed whose notes are a placeholder.
+
 ## Invariants — break these and a user loses data
 
 - **The FFI struct mirror.** `GpodTrackInfo`, `GpodTrackEdit` and `GpodImportSpec`

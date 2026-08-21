@@ -116,6 +116,18 @@ same recipe, downloadable with a GitHub account. Or
 4. Click **Open Privacy Settings** when prompted and enable Platter under
    **Privacy & Security → Files & Folders → Removable Volumes**, then relaunch
 
+### Updates
+
+Platter checks for a new version each time it starts. When one is out, the
+header shows its number beside the current one — click it for the notes and
+**Install and restart**. Nothing downloads until you ask it to, and declining a
+version silences only that one.
+
+The update is verified against a signing key built into the app, so a tampered
+download is refused rather than installed. You never need the `xattr` command
+again after the first install: the quarantine flag is set by browsers, and this
+copy arrives through the app itself.
+
 ## Build from source
 
 ### Prerequisites

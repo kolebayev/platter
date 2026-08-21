@@ -38,6 +38,10 @@ jobs:
       # A shipped release outlives its Actions run; the attached DMG is the
       # copy that matters, this one is only the hand-off between jobs.
       retention-days: 7
+    # Only here, never from ci.yml: an updater archive is signed if and only if
+    # it belongs to a tag someone cut on purpose.
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 
   publish:
     needs: build
@@ -57,15 +61,50 @@ jobs:
       - name: Add a fixed-name copy for the latest-release link
         run: cp dist/Platter_*_arm64.dmg dist/Platter_macOS_arm64.dmg
 
+      # An unsigned archive is a release that quietly stops updating everyone
+      # who already installed Platter — a failure whose only symptom is silence
+      # — so a missing .sig fails the release here, before the draft exists,
+      # rather than at the moment you press Publish.
+      - name: Refuse a release the updater could not use
+        run: |
+          set -euo pipefail
+          if [ ! -f dist/Platter.app.tar.gz.sig ]; then
+            echo "::error::no Platter.app.tar.gz.sig — is the TAURI_SIGNING_PRIVATE_KEY secret set?"
+            exit 1
+          fi
+
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.dmg
+          # No latest.json here. That one is written by updater-feed.yml the
+          # moment this draft is published, because until then the notes it has
+          # to carry — the ones you are about to type into the draft — do not
+          # exist yet.
+          files: |
+            dist/*.dmg
+            dist/Platter.app.tar.gz
+            dist/Platter.app.tar.gz.sig
           draft: true
           # Drafted, not published: the DMG is unsigned beyond ad-hoc, and the
           # quarantine instructions below are the first thing a downloader
           # needs. A draft gives you the chance to read them on the page they
           # will appear on before anyone can download the build.
+          #
+          # It is also the release switch for updates. A draft's assets are not
+          # publicly downloadable and a draft is never `/releases/latest`, so
+          # every installed copy keeps seeing the previous version until you
+          # press Publish — and every one of them sees the new one within a
+          # launch afterwards.
+          # Write the changelog ABOVE the marker when you edit this draft, in
+          # plain lines — the update dialog shows that text verbatim and never
+          # as markup, so `###` and `**` arrive on screen as themselves.
+          # updater-feed.yml takes everything above it as the notes shown in
+          # the app's own update dialog, and everything below is first-install
+          # instructions that an in-app update has already made irrelevant —
+          # nobody updating from inside Platter needs to be told to run xattr,
+          # and telling them anyway is how a working update looks broken.
           body: |
+            <!-- update-notes-end -->
+
             Requires macOS 14 or newer on Apple Silicon.
 
             **This build is ad-hoc signed**, so macOS reports it as damaged on
