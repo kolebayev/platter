@@ -261,6 +261,31 @@ export function resolvedArtwork(id: string, size: number): string | null | undef
   return artworkResolved.get(`${id}@${size}`);
 }
 
+/** Republishes a cover the webview refused to decode as "no art".
+ *
+ * A data URL that fails to paint is not a missing cover as far as the <img>
+ * is concerned — WebKit swaps in its own broken-image icon, which on macOS is
+ * the system question-mark tile: foreign to this UI and unreadable as either
+ * "no cover" or "bug". The thumb reports the failure here instead, so this
+ * key falls back to the music-note placeholder for every mount, not just the
+ * one that happened to paint it. The mark is an ordinary cache entry, so
+ * invalidateArtwork drops it and a replaced cover is fetched again. */
+export function markArtworkUndecodable(id: string, size: number) {
+  const key = `${id}@${size}`;
+  const url = artworkResolved.get(key);
+  log.warn("artwork undecodable", {
+    id,
+    size,
+    // The whole data URL is megabytes of base64; its head is the part that
+    // says which encoder produced it, which is what a mime/bytes mismatch
+    // shows up in.
+    head: typeof url === "string" ? url.slice(0, 32) : String(url),
+  });
+  artworkResolved.set(key, null);
+  artworkPromises.set(key, Promise.resolve(null));
+  trimArtworkCaches();
+}
+
 /** Bumped on every invalidation; ArtworkThumb subscribes so already-mounted
  * thumbs refetch when their track's cover was replaced (their trackId prop
  * doesn't change in that case, so nothing else would re-run the effect). */

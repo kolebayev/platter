@@ -30,6 +30,12 @@ export function ImportDialog({
   onImport: (items: PendingImport[]) => Promise<ImportOutcome>;
 }) {
   const [pending, setPending] = useState<PendingImport[]>([]);
+  // File paths whose embedded cover the webview could not decode. Purely a
+  // display concern — the bytes still go to the backend on import, which
+  // decodes them with gdk-pixbuf, not WebKit — but without this an
+  // undecodable cover paints WebKit's broken-image icon, the macOS system
+  // question mark, instead of the placeholder beside every other row.
+  const [undecodableArt, setUndecodableArt] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
   // Bumped on close: a tag read still in flight when the user cancels must
@@ -40,6 +46,7 @@ export function ImportDialog({
     if (!next) {
       generationRef.current++;
       setPending([]);
+      setUndecodableArt(new Set());
     }
     onOpenChange(next);
   }
@@ -136,11 +143,14 @@ export function ImportDialog({
           <div className="-mx-1 flex-1 space-y-3 overflow-y-auto px-1 py-1">
             {pending.map((item, i) => (
               <div key={`${item.filePath}-${i}`} className="flex items-start gap-3">
-                {item.artworkDataUrl ? (
+                {item.artworkDataUrl && !undecodableArt.has(item.filePath) ? (
                   <img
                     src={item.artworkDataUrl}
                     className="size-11 shrink-0 rounded object-cover"
                     alt=""
+                    onError={() =>
+                      setUndecodableArt((s) => new Set(s).add(item.filePath))
+                    }
                   />
                 ) : (
                   <div className="flex size-11 shrink-0 items-center justify-center rounded bg-muted text-muted-foreground">
