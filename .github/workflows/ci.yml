@@ -1,9 +1,16 @@
 name: CI
 
+# Work lands on dev first and reaches main only through a dev -> main pull
+# request, so dev is where a change sits while it is still being iterated on.
+# CI deliberately ignores it: an unfiltered `pull_request:` would burn a
+# macos-14 runner on every push to every feature branch, and the dev -> main
+# pull request re-runs the whole suite on the same commits before anything is
+# released. main is the branch whose green tick means something.
 on:
   push:
     branches: [master, main]
   pull_request:
+    branches: [master, main]
 
 # Superseded pull request pushes are worth cancelling; superseded main pushes
 # are not. Two merges landing back to back would otherwise leave the first

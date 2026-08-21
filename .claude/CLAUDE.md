@@ -43,6 +43,24 @@ a hand-written C bridge. macOS only.
   `tell application "platter-tauri"` silently fails — the bundle is named
   Platter, the process is platter-tauri.
 
+## Branching
+
+- **Every pull request targets `dev`.** Never open one against `main` from a
+  feature branch, and never commit to `main` directly. `main` moves only
+  through a single `dev` -> `main` pull request that promotes what has already
+  accumulated on `dev`.
+- Branch off `dev`, not `main`, when starting work.
+- **CI does not run on merges into `dev`.** `ci.yml` triggers on pushes to
+  `main`/`master` and on pull requests whose *base* is `main`/`master`, so a
+  pull request into `dev` gets no checks at all — by design, not by accident.
+  The consequence: a merge into `dev` is unverified, and the `dev` -> `main`
+  pull request is the first and only place the suite runs. Run `npm test`,
+  `npm run typecheck` and `cargo test` locally before merging anything into
+  `dev`, because nothing else will.
+- The DMG job is `if: github.event_name == 'push'` and its trigger is `main`,
+  so `dev` never produces a build artifact either. Tag from `main` for a
+  release, as before.
+
 ## Invariants — break these and a user loses data
 
 - **The FFI struct mirror.** `GpodTrackInfo`, `GpodTrackEdit` and `GpodImportSpec`
