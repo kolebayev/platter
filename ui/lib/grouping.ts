@@ -2,7 +2,7 @@
 // over Track arrays — the Swift originals were too, which is why this file is
 // nearly a transcription.
 
-import type { Track, TrackGrouping, TrackSort } from "./types";
+import type { SortDirection, Track, TrackGrouping, TrackSortState } from "./types";
 
 export interface AlbumSubgroup {
   id: string;
@@ -63,41 +63,71 @@ function newestDate(tracks: Track[]): number | null {
   return newest;
 }
 
-function sortTracks(tracks: Track[], sort: TrackSort): Track[] {
+type Comparator = (a: Track, b: Track) => number;
+
+/** Every sort settles ties on title, so an order is total and a re-sort of the
+ * same tracks can't shuffle rows that compare equal. */
+const byTitle: Comparator = (a, b) => collator.compare(a.title, b.title);
+
+/** A number the database may never have recorded, where 0 means "unknown" —
+ * year, bitrate, play count. Unknown sorts first ascending, which keeps the
+ * blanks together at one end rather than scattered through the list. */
+function numerically(of: (track: Track) => number): Comparator {
+  return (a, b) => {
+    const x = of(a);
+    const y = of(b);
+    return x === y ? byTitle(a, b) : x - y;
+  };
+}
+
+/** One per TrackSortKey. Each is the ASCENDING order; descending is this
+ * negated, tie-breaks included — reversing the whole comparator is what makes
+ * a descending list the exact mirror of the ascending one. */
+const COMPARATORS: Record<TrackSortState["key"], Comparator> = {
+  title: byTitle,
+  artist: (a, b) =>
+    a.artist === b.artist ? byTitle(a, b) : collator.compare(a.artist, b.artist),
+  albumOrder: (a, b) => {
+    if (a.album !== b.album) return collator.compare(a.album, b.album);
+    // Disc before track: without it a two-disc set interleaves, because
+    // both discs restart their numbering at 1. Unset (0) sorts first,
+    // which keeps single-disc albums exactly where they were.
+    if (a.discNumber !== b.discNumber) return a.discNumber - b.discNumber;
+    if (a.trackNumber !== b.trackNumber) return a.trackNumber - b.trackNumber;
+    return byTitle(a, b);
+  },
+  genre: (a, b) => (a.genre === b.genre ? byTitle(a, b) : collator.compare(a.genre, b.genre)),
+  // The heading reads "#", and a disc number is part of what that number
+  // means: track 1 of disc 2 is not track 1.
+  trackNumber: (a, b) => {
+    if (a.discNumber !== b.discNumber) return a.discNumber - b.discNumber;
+    if (a.trackNumber !== b.trackNumber) return a.trackNumber - b.trackNumber;
+    return byTitle(a, b);
+  },
+  year: numerically((t) => t.year),
+  time: numerically((t) => t.durationMs),
+  bitrate: numerically((t) => t.bitrate),
+  plays: numerically((t) => t.playCount),
+  // Newest first is this sort's ascending order: "Recently Added" names the
+  // top of the list, so reversing it has to mean oldest first. Undated tracks
+  // trail the dated ones and so lead under a reversal.
+  recentlyAdded: (a, b) => {
+    if (a.dateAdded !== null && b.dateAdded !== null && a.dateAdded !== b.dateAdded) {
+      return b.dateAdded - a.dateAdded;
+    }
+    if (a.dateAdded === null && b.dateAdded !== null) return 1;
+    if (a.dateAdded !== null && b.dateAdded === null) return -1;
+    return byTitle(a, b);
+  },
+};
+
+function directed(comparator: Comparator, dir: SortDirection): Comparator {
+  return dir === "asc" ? comparator : (a, b) => -comparator(a, b);
+}
+
+function sortTracks(tracks: Track[], sort: TrackSortState): Track[] {
   const sorted = [...tracks];
-  switch (sort) {
-    case "title":
-      sorted.sort((a, b) => collator.compare(a.title, b.title));
-      break;
-    case "artist":
-      sorted.sort((a, b) =>
-        a.artist === b.artist
-          ? collator.compare(a.title, b.title)
-          : collator.compare(a.artist, b.artist),
-      );
-      break;
-    case "albumOrder":
-      sorted.sort((a, b) => {
-        if (a.album !== b.album) return collator.compare(a.album, b.album);
-        // Disc before track: without it a two-disc set interleaves, because
-        // both discs restart their numbering at 1. Unset (0) sorts first,
-        // which keeps single-disc albums exactly where they were.
-        if (a.discNumber !== b.discNumber) return a.discNumber - b.discNumber;
-        if (a.trackNumber !== b.trackNumber) return a.trackNumber - b.trackNumber;
-        return collator.compare(a.title, b.title);
-      });
-      break;
-    case "recentlyAdded":
-      sorted.sort((a, b) => {
-        if (a.dateAdded !== null && b.dateAdded !== null && a.dateAdded !== b.dateAdded) {
-          return b.dateAdded - a.dateAdded;
-        }
-        if (a.dateAdded === null && b.dateAdded !== null) return 1;
-        if (a.dateAdded !== null && b.dateAdded === null) return -1;
-        return collator.compare(a.title, b.title);
-      });
-      break;
-  }
+  sorted.sort(directed(COMPARATORS[sort.key], sort.dir));
   return sorted;
 }
 
@@ -107,28 +137,33 @@ function sortTracks(tracks: Track[], sort: TrackSort): Track[] {
  * each group's tracks on every comparison. */
 function orderGroups<T>(
   items: T[],
-  sort: TrackSort,
+  sort: TrackSortState,
   newest: (item: T) => number | null,
   title: (item: T) => string,
 ): T[] {
   const ordered = [...items];
-  if (sort === "recentlyAdded") {
+  let compare: (a: T, b: T) => number;
+  if (sort.key === "recentlyAdded") {
     const newestOf = new Map<T, number | null>(items.map((i) => [i, newest(i)]));
-    ordered.sort((a, b) => {
+    compare = (a, b) => {
       const x = newestOf.get(a) ?? null;
       const y = newestOf.get(b) ?? null;
       if (x !== null && y !== null && x !== y) return y - x;
       if (x === null && y !== null) return 1;
       if (x !== null && y === null) return -1;
       return collator.compare(title(a), title(b));
-    });
+    };
   } else {
-    ordered.sort((a, b) => collator.compare(title(a), title(b)));
+    compare = (a, b) => collator.compare(title(a), title(b));
   }
+  // Headers follow the direction too. A descending sort that left A–Z headers
+  // above descending tracks would be two orders on screen at once, and the
+  // arrow in the heading would be describing only half the list.
+  ordered.sort(sort.dir === "asc" ? compare : (a, b) => -compare(a, b));
   return ordered;
 }
 
-function albumSubgroups(tracks: Track[], groupId: string, sort: TrackSort): AlbumSubgroup[] {
+function albumSubgroups(tracks: Track[], groupId: string, sort: TrackSortState): AlbumSubgroup[] {
   const buckets = new Map<string, { title: string; tracks: Track[] }>();
   for (const track of tracks) {
     const album = track.album || "Unknown Album";
@@ -180,7 +215,7 @@ function sectionKey(track: Track, grouping: TrackGrouping): { key: string; title
 export function groupTracks(
   tracks: Track[],
   grouping: TrackGrouping,
-  sort: TrackSort,
+  sort: TrackSortState,
   search: string,
 ): TrackGroup[] {
   const lowered = search.toLowerCase();

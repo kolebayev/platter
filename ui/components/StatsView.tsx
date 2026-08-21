@@ -126,6 +126,10 @@ function StatsBody({
   ];
 
   return (
+    // h-full, not flex-1: the tab's wrapper in App is a plain block, so there
+    // is no flex line here to take a share of — the pane has to claim the
+    // height it was given and scroll inside it. The inner scroller below is
+    // the one that gets flex-1, because this element is a flex line for it.
     <div className="flex h-full flex-col">
       {/* Header sits outside the scroller, so the title and Copy Snapshot stay
           put while everything under them scrolls. */}

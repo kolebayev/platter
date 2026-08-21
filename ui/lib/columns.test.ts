@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_COLUMN_WIDTHS,
-  TITLE_MIN_WIDTH,
+  FLEX_MIN_WIDTH,
   TRACK_COLUMNS,
   clampColumnWidth,
   columnGridTemplate,
@@ -24,9 +24,9 @@ describe("clampColumnWidth", () => {
   });
 
   it("falls back to the default rather than yielding NaN", () => {
-    expect(clampColumnWidth("album", Number.NaN)).toBe(DEFAULT_COLUMN_WIDTHS.album);
-    expect(clampColumnWidth("album", Number.POSITIVE_INFINITY)).toBe(
-      DEFAULT_COLUMN_WIDTHS.album,
+    expect(clampColumnWidth("title", Number.NaN)).toBe(DEFAULT_COLUMN_WIDTHS.title);
+    expect(clampColumnWidth("title", Number.POSITIVE_INFINITY)).toBe(
+      DEFAULT_COLUMN_WIDTHS.title,
     );
   });
 });
@@ -41,8 +41,15 @@ describe("normalizeColumnWidths", () => {
   it("keeps known widths, defaults the missing ones and drops the rest", () => {
     const widths = normalizeColumnWidths({ artist: 200, mood: 999 });
     expect(widths.artist).toBe(200);
-    expect(widths.album).toBe(DEFAULT_COLUMN_WIDTHS.album);
+    expect(widths.title).toBe(DEFAULT_COLUMN_WIDTHS.title);
     expect("mood" in widths).toBe(false);
+  });
+
+  it("drops the flexible column, which has no width to store", () => {
+    // A build that stored one before Album became the flexible column must not
+    // leave a pixel width in the widths object, where it would reach the grid
+    // template as a fixed track.
+    expect("album" in normalizeColumnWidths({ album: 120 })).toBe(false);
   });
 
   it("clamps stored values, so a hand-edited entry can't wedge a column", () => {
@@ -54,66 +61,72 @@ describe("normalizeColumnWidths", () => {
 });
 
 describe("columnGridTemplate", () => {
-  it("gives Title the slack and every other column an explicit width", () => {
+  it("gives Album the slack and every other column an explicit width", () => {
     expect(columnGridTemplate(DEFAULT_COLUMN_WIDTHS)).toBe(
-      "minmax(0, 1fr) 120px 120px 80px 30px 40px 40px 36px 36px",
+      "300px 120px minmax(0, 1fr) 80px 30px 40px 40px 36px 36px 96px",
     );
   });
 
   it("has one track per column, in declaration order", () => {
     const tracks = columnGridTemplate(DEFAULT_COLUMN_WIDTHS).split(" ");
-    // "minmax(0," and "1fr)" split apart — Title costs two words, the rest one.
+    // "minmax(0," and "1fr)" split apart — the flexible column costs two
+    // words, the rest one.
     expect(tracks).toHaveLength(TRACK_COLUMNS.length + 1);
   });
 });
 
 describe("resizeTargetOf", () => {
   it("resizes the column a boundary is the right edge of", () => {
-    expect(resizeTargetOf("album")).toEqual({ key: "album", sign: 1 });
+    expect(resizeTargetOf("title")).toEqual({ key: "title", sign: 1 });
+    expect(resizeTargetOf("dateAdded")).toEqual({ key: "dateAdded", sign: 1 });
   });
 
-  it("inverts at Title, whose edge can only move by narrowing Artist", () => {
-    expect(resizeTargetOf("title")).toEqual({ key: "artist", sign: -1 });
+  it("inverts at Album, whose edge can only move by narrowing Genre", () => {
+    expect(resizeTargetOf("album")).toEqual({ key: "genre", sign: -1 });
   });
 });
 
 describe("fitColumnWidths", () => {
   const wide = (): ColumnWidths => ({
+    title: 700,
     artist: 400,
-    album: 400,
     genre: 400,
     trackNumber: 120,
     year: 120,
     time: 120,
     bitrate: 120,
     plays: 120,
+    dateAdded: 200,
   });
 
-  it("leaves widths alone when Title already has its floor", () => {
+  it("leaves widths alone when Album already has its floor", () => {
     expect(fitColumnWidths(DEFAULT_COLUMN_WIDTHS, 1200)).toEqual(DEFAULT_COLUMN_WIDTHS);
   });
 
-  it("gives Title its floor back when the fixed columns have eaten the row", () => {
+  it("gives Album its floor back when the fixed columns have eaten the row", () => {
     // The state a real drag reached: fixed columns exactly filling the box.
     const starved: ColumnWidths = {
+      title: 400,
       artist: 71,
-      album: 205,
       genre: 186,
       trackNumber: 120,
       year: 120,
       time: 36,
       bitrate: 120,
       plays: 36,
+      dateAdded: 180,
     };
     const fitted = fitColumnWidths(starved, 958);
-    expect(958 - fixedColumnsWidth(fitted)).toBeGreaterThanOrEqual(TITLE_MIN_WIDTH);
+    expect(958 - fixedColumnsWidth(fitted)).toBeGreaterThanOrEqual(FLEX_MIN_WIDTH);
   });
 
   it("shrinks proportionally, keeping the order the user set", () => {
     const fitted = fitColumnWidths(wide(), 900);
-    expect(fitted.artist).toBe(fitted.album);
-    // Album was set wider than trackNumber and stays wider.
-    expect(fitted.album).toBeGreaterThan(fitted.trackNumber);
+    // Year and Plays were set to the same width and share a minimum, so the
+    // shrink has to leave them equal.
+    expect(fitted.year).toBe(fitted.plays);
+    // Genre was set wider than Year and stays wider.
+    expect(fitted.genre).toBeGreaterThan(fitted.year);
   });
 
   it("never drives a column under its own minimum", () => {

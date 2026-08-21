@@ -90,4 +90,14 @@
   html {
     @apply font-sans;
     }
+  /* The document itself never scrolls: this is an app window, not a page, and
+     every scrollable region inside it owns its own scrollbar. Without this a
+     child that overflows horizontally — a track list too wide for a narrow
+     window — makes the whole UI slide sideways under a two-finger gesture,
+     header and all. `overscroll-none` also takes the rubber-band with it, so a
+     horizontal flick can no longer bounce the interface. */
+  html,
+  body {
+    @apply overflow-hidden overscroll-none;
+    }
 }
