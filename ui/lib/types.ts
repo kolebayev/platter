@@ -253,7 +253,10 @@ export interface ConvertProgress {
 
 export interface ConvertLogLine {
   seq: number;
-  level: "info" | "warn" | "error" | "cmd";
+  /** Who is speaking, not how loud. `cmd` is this app narrating what it is
+   * about to do, `ok` is a track that landed, `info` is the job talking about
+   * itself, and `warn`/`error` are ffmpeg's own words. */
+  level: "info" | "ok" | "warn" | "error" | "cmd";
   file: string | null;
   line: string;
 }

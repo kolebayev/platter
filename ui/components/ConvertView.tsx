@@ -888,6 +888,25 @@ function EstimatePanel({
   );
 }
 
+/** The log pane's palette, keyed by who is speaking.
+ *
+ * The colours are the queue's, not a second scheme invented for this pane:
+ * `ok` is the same emerald a finished row uses and `error` the same
+ * destructive red, so a track that went green in the list is green here too.
+ *
+ * The rest is a deliberate hierarchy rather than one colour per level. The
+ * lines this app writes about its own progress (`cmd`) sit muted, because a
+ * successful album is mostly those and they are context, not news. ffmpeg's
+ * warnings keep amber. What a reader actually scans for — landed, failed —
+ * takes the only two saturated colours in the pane. */
+const LOG_LEVELS: Record<ConvertLogLine["level"], { glyph: string; color: string }> = {
+  cmd: { glyph: "·", color: "text-muted-foreground" },
+  info: { glyph: "·", color: "text-foreground" },
+  ok: { glyph: "✓", color: DONE_TONE },
+  warn: { glyph: "!", color: "text-amber-600 dark:text-amber-500" },
+  error: { glyph: "✕", color: "text-destructive" },
+};
+
 function ConvertFooter({
   running,
   progress,
@@ -939,19 +958,19 @@ function ConvertFooter({
           {log.length === 0 ? (
             <p className="text-muted-foreground">No output yet.</p>
           ) : (
-            log.map((line) => (
-              <div
-                key={line.seq}
-                className={cn(
-                  "whitespace-pre-wrap break-all",
-                  line.level === "error" && "text-destructive",
-                  line.level === "warn" && "text-amber-600 dark:text-amber-500",
-                  line.level === "cmd" && "text-muted-foreground",
-                )}
-              >
-                {line.file ? `${line.file}: ${line.line}` : line.line}
-              </div>
-            ))
+            log.map((line) => {
+              const style = LOG_LEVELS[line.level] ?? LOG_LEVELS.info;
+              return (
+                <div key={line.seq} className="whitespace-pre-wrap break-all">
+                  {/* The glyph column is what makes a run scannable: an album
+                      is a wall of identical-looking lines, and the eye finds
+                      ✓/✕ far faster than it reads. */}
+                  <span className={cn("select-none", style.color)}>{style.glyph} </span>
+                  {line.file && <span className="text-muted-foreground">{line.file}: </span>}
+                  <span className={style.color}>{line.line}</span>
+                </div>
+              );
+            })
           )}
         </div>
       )}
