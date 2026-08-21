@@ -50,16 +50,26 @@ a hand-written C bridge. macOS only.
   through a single `dev` -> `main` pull request that promotes what has already
   accumulated on `dev`.
 - Branch off `dev`, not `main`, when starting work.
-- **CI does not run on merges into `dev`.** `ci.yml` triggers on pushes to
-  `main`/`master` and on pull requests whose *base* is `main`/`master`, so a
-  pull request into `dev` gets no checks at all — by design, not by accident.
-  The consequence: a merge into `dev` is unverified, and the `dev` -> `main`
-  pull request is the first and only place the suite runs. Run `npm test`,
-  `npm run typecheck` and `cargo test` locally before merging anything into
-  `dev`, because nothing else will.
-- The DMG job is `if: github.event_name == 'push'` and its trigger is `main`,
-  so `dev` never produces a build artifact either. Tag from `main` for a
-  release, as before.
+- **No pull request runs CI, ever.** `ci.yml` has no `pull_request:` trigger —
+  only `push` to `main`/`master` and a manual `workflow_dispatch`. This app
+  deploys nowhere, so a pull request has no environment a red tick would
+  protect, while every job needs a macos-14 runner to compile against libgpod.
+  Do not add the trigger back to "get a check on the PR": it buys a verdict on
+  a commit that is about to be superseded by the merge commit anyway.
+- **The consequence: every merge is unverified until it is on `main`.** Neither
+  a merge into `dev` nor the `dev` -> `main` promotion is checked before it
+  lands — the suite runs on the resulting push to `main`. Before promoting, run
+  the whole thing locally, because nothing upstream will:
+  `npm ci && npm run typecheck && npm test && npm run build`, then
+  `cargo fmt --manifest-path tauri-src/Cargo.toml --check`,
+  `cargo clippy --manifest-path tauri-src/Cargo.toml --all-targets -- -D warnings`
+  and `cargo test --manifest-path tauri-src/Cargo.toml`. The eight branches
+  merged in August 2026 all failed `cargo fmt --check` on arrival, precisely
+  because nothing had ever run it on them.
+- No other workflow watches pull requests either: release.yml fires on a `v*`
+  tag, updater-feed.yml on `release: published`, and build-dmg.yml is
+  `workflow_call` only. So `dev` produces no build artifact — tag from `main`
+  for a release, as before.
 
 ## Shipping updates
 
