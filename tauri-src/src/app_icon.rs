@@ -38,9 +38,17 @@ use base64::Engine;
 /// Adding one is a file in `icons/alt/` plus a line here. Ids are persisted in
 /// settings, so renaming one silently resets anyone who had it selected.
 const ICONS: &[(&str, &str, &[u8])] = &[
-    ("orange", "Orange", include_bytes!("../icons/alt/orange.png")),
+    (
+        "orange",
+        "Orange",
+        include_bytes!("../icons/alt/orange.png"),
+    ),
     ("green", "Green", include_bytes!("../icons/alt/green.png")),
-    ("purple", "Purple", include_bytes!("../icons/alt/purple.png")),
+    (
+        "purple",
+        "Purple",
+        include_bytes!("../icons/alt/purple.png"),
+    ),
     ("black", "Black", include_bytes!("../icons/alt/black.png")),
 ];
 

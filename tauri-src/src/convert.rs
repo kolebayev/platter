@@ -2097,7 +2097,8 @@ mod tests {
         // A master that touches full scale exactly is representable and must
         // not be turned down.
         assert_eq!(headroom_gain_db(LOSSY_CLIP_CEILING_DB), None);
-        assert_eq!(headroom_gain_db(f64::NEG_INFINITY), None); // silence
+        // Silence.
+        assert_eq!(headroom_gain_db(f64::NEG_INFINITY), None);
         // Peak measured off a real AAC encode of this album's master.
         let gain = headroom_gain_db(1.45).expect("overshoot needs a trim");
         assert!((gain - -2.45).abs() < 1e-9, "got {gain}");
@@ -2306,7 +2307,14 @@ mod tests {
         ));
     }
 
-    fn stats(codec: &str, rate: u32, ch: u32, bits: Option<u32>, bytes: u64, kbps: u32) -> OutputStats {
+    fn stats(
+        codec: &str,
+        rate: u32,
+        ch: u32,
+        bits: Option<u32>,
+        bytes: u64,
+        kbps: u32,
+    ) -> OutputStats {
         OutputStats {
             codec: codec.into(),
             sample_rate: rate,
