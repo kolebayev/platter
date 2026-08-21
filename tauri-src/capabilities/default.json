@@ -11,6 +11,8 @@
     "core:window:allow-set-title",
     "core:window:allow-show",
     "notification:default",
+    "updater:default",
+    "process:allow-restart",
     "core:webview:deny-internal-toggle-devtools"
   ]
 }

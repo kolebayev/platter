@@ -24,6 +24,12 @@ tauri-plugin-dialog = "2"
 # rotating log file under ~/Library/Logs — the artifact a bug report attaches.
 tauri-plugin-notification = "2"
 tauri-plugin-log = "2"
+# In-app updates off GitHub Releases. The DMG is handed out by link, so without
+# this a user stays on whatever build they downloaded once, forever.
+tauri-plugin-updater = "2"
+# Only for the relaunch after an update installs — the updater swaps the bundle
+# under the running process, and nothing else can restart it from inside.
+tauri-plugin-process = "2"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

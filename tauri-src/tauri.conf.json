@@ -50,5 +50,13 @@
     "shortDescription": "Manage music on a click-wheel iPod Classic",
     "publisher": "Ilia Kolebaev",
     "copyright": "Copyright © 2026 Ilia Kolebaev"
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/kolebayev/platter/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU4ODAyNkM3QzQyNjczMDkKUldRSmN5YkV4eWFBNklHY3dkZzh0SFhwMjV2dmpxRktJMU5IY2JWTVE5aG1lb2ZZcW0rSGRGS00K"
+    }
   }
 }

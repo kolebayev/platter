@@ -45,11 +45,25 @@ pub fn run() {
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stderr),
                 ])
                 .level(log::LevelFilter::Info)
+                // The updater logs a failed check at ERROR, and a failed check
+                // is a routine state: the endpoint 404s for every build older
+                // than the first release that carried a latest.json, and any
+                // launch without a network does the same. Left on, this file —
+                // the one a bug report attaches — opens with an error that
+                // means nothing is wrong. `updates.ts` logs the same failure at
+                // INFO with the same message, so nothing is lost.
+                .level_for("tauri_plugin_updater", log::LevelFilter::Off)
                 .max_file_size(2 * 1024 * 1024)
                 .build(),
         )
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        // The check itself is driven from the frontend, but the HTTP request
+        // is made here — the webview's CSP allows no origin but its own, and
+        // widening `connect-src` to reach GitHub would open that door for
+        // every other thing the UI loads too.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(library::new_shared())
         .manage(convert_job::new_queue())
         .setup(|app| {

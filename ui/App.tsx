@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { AppVersion } from "@/components/AppVersion";
+import { UpdateBadge } from "@/components/UpdateBadge";
 import { BulkEditPanel } from "@/components/BulkEditPanel";
 import { CapacityGauge } from "@/components/CapacityGauge";
 import { ImportDialog } from "@/components/ImportDialog";
@@ -653,6 +654,7 @@ export default function App() {
         <ViewTabs view={view} onChange={setView} convertProgress={convertProgress} />
 
         <div className="flex items-center justify-end gap-1">
+          <UpdateBadge />
           <AppVersion />
           <Button
             variant="ghost"
