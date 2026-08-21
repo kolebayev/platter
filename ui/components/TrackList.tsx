@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { CircleDashed, Circle, CheckCircle2, Music } from "lucide-react";
+import { ChevronDown, ChevronUp, CircleDashed, Circle, CheckCircle2, Music } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AddMusicButton } from "@/components/AddMusicButton";
 import { EmptyState } from "@/components/EmptyState";
@@ -9,21 +9,25 @@ import { ArtworkThumb } from "@/components/ArtworkThumb";
 import { LibraryHeaderRow } from "@/components/LibraryHeaderRow";
 import {
   DEFAULT_COLUMN_WIDTHS,
+  FLEX_MIN_WIDTH,
   TRACK_COLUMNS,
   columnGridTemplate,
   fitColumnWidths,
+  fixedColumnsWidth,
   readColumnWidths,
   resizeTargetOf,
   withColumnWidth,
   writeColumnWidths,
+  type ColumnDef,
   type ColumnKey,
   type ColumnWidths,
   type ResizableColumnKey,
 } from "@/lib/columns";
-import { formatDuration } from "@/lib/format";
+import { formatDate, formatDuration } from "@/lib/format";
 import { log } from "@/lib/log";
 import { rowGroupId, type AlbumSubgroup, type ListRow, type TrackGroup } from "@/lib/grouping";
-import type { Track, TrackGrouping, TrackSort } from "@/lib/types";
+import { isSortedBy, nextSortFor, sortsDescending } from "@/lib/sort";
+import type { Track, TrackGrouping, TrackSortState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** One grid definition shared by the column heading and every row — the two
@@ -34,6 +38,10 @@ import { cn } from "@/lib/utils";
 const COLUMNS = "grid grid-cols-[var(--track-cols)] items-center gap-2 px-4";
 
 const ALIGN = { left: "", center: "text-center", right: "text-right" } as const;
+
+/** The same three alignments for the heading buttons, which are flex rows
+ * (label plus sort arrow) and so cannot use text-align. */
+const JUSTIFY = { left: "justify-start", center: "justify-center", right: "justify-end" } as const;
 
 /** The grid's own box, inside the `px-4` the rows and heading share. */
 function contentWidth(root: HTMLElement): number {
@@ -95,14 +103,22 @@ function TrackListImpl({
   addDisabled: boolean;
   grouping: TrackGrouping;
   onGroupingChange: (grouping: TrackGrouping) => void;
-  sort: TrackSort;
-  onSortChange: (sort: TrackSort) => void;
+  sort: TrackSortState;
+  onSortChange: (sort: TrackSortState) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** The heading's clipping box, whose scrollLeft trails the list's. */
+  const headingRef = useRef<HTMLDivElement>(null);
   /** Section under the pointer. Rows are absolutely positioned siblings, so
    * hovering "the artist section and everything inside it" can't be a CSS
    * :hover on an ancestor — each row reports its section id instead. */
   const [hoveredGroup, setHoveredGroup] = useState<string | null>(null);
+
+  /** Covers on the rows, flat view only. The grouped views already put a large
+   * cover in every album header, and a thumbnail on each of that album's
+   * tracks would be the same picture printed a dozen times down the page. Flat
+   * view has no headers, so it is the one place a row has to carry its own. */
+  const showArtwork = grouping === "none";
 
   /** Owns the column widths; `gridRef` is the element the grid template is
    * inherited from, and the one a drag writes to directly. */
@@ -159,6 +175,17 @@ function TrackListImpl({
    * only ever shrinks. Keeping intent and display apart means widening the
    * window gives back exactly what was set. */
   const shownWidths = useMemo(() => fitColumnWidths(widths, room), [widths, room]);
+
+  /** The width the columns actually need, including the row's own `px-4`.
+   *
+   * Below this the list scrolls sideways, and the number has to be *computed*
+   * rather than left to the browser. Rows are absolutely positioned, so only
+   * the handful currently mounted contribute any overflow: the scroll width
+   * would then change every time the virtualizer swapped a row in or out, the
+   * browser would re-clamp scrollLeft against the new value, and a sideways
+   * scroll would visibly stutter against a target that keeps moving. Stated up
+   * front, it is the same on every frame. */
+  const rowMinWidth = fixedColumnsWidth(shownWidths) + FLEX_MIN_WIDTH + 32;
 
   const paintWidths = useCallback(
     (next: ColumnWidths, within: number) => {
@@ -235,7 +262,7 @@ function TrackListImpl({
       const row = rows[index];
       if (row.kind === "artist") return 80;
       if (row.kind === "album") return row.first ? 52 : 72;
-      return 29;
+      return showArtwork ? 33 : 29;
     },
     getItemKey: (index) => {
       const row = rows[index];
@@ -288,34 +315,44 @@ function TrackListImpl({
           addDisabled={addDisabled}
           grouping={grouping}
           onGroupingChange={onGroupingChange}
-          sort={sort}
-          onSortChange={onSortChange}
           onResetColumns={resetAllWidths}
         />
       )}
 
-      {/* Headings only over something to head. On an empty iPod nine labels
+      {/* Headings only over something to head. On an empty iPod ten labels
           across an empty pane describe a table that isn't there, and the
-          resize handles under them adjust columns nobody can see. */}
+          resize handles under them adjust columns nobody can see.
+
+          Two elements rather than one: the outer box clips, the inner one
+          carries the grid and may be wider than that box. The heading cannot
+          live inside the list's scroller — it must not scroll vertically — so
+          its horizontal offset is mirrored from there by hand, below. Before
+          it was clipped, a heading too wide for the window widened the whole
+          document instead, and a sideways gesture slid the entire UI. */}
       <div
-        className={cn(
-          COLUMNS,
-          "border-b py-1 text-[11px] font-medium text-muted-foreground/80 select-none",
-          trackCount === 0 && "hidden",
-        )}
+        ref={headingRef}
+        className={cn("overflow-hidden border-b", trackCount === 0 && "hidden")}
       >
-        {TRACK_COLUMNS.map((col) => (
-          <span key={col.key} className={cn("relative", ALIGN[col.align])} title={col.hint}>
-            {col.label}
-            <ColumnResizer
-              column={col.key}
-              label={col.label}
-              onBegin={beginResize}
-              onNudge={nudgeWidth}
-              onReset={resetWidth}
-            />
-          </span>
-        ))}
+        <div
+          className={cn(
+            COLUMNS,
+            "py-1 text-[11px] font-medium text-muted-foreground/80 select-none",
+          )}
+          style={{ minWidth: rowMinWidth }}
+        >
+          {TRACK_COLUMNS.map((col) => (
+            <span key={col.key} className={cn("relative", ALIGN[col.align])}>
+              <ColumnSortButton column={col} sort={sort} onSortChange={onSortChange} />
+              <ColumnResizer
+                column={col.key}
+                label={col.label}
+                onBegin={beginResize}
+                onNudge={nudgeWidth}
+                onReset={resetWidth}
+              />
+            </span>
+          ))}
+        </div>
       </div>
 
       {rows.length === 0 ? (
@@ -330,12 +367,20 @@ function TrackListImpl({
 
       <div
         ref={scrollRef}
-        className={cn("flex-1 overflow-y-auto select-none", rows.length === 0 && "hidden")}
+        className={cn("flex-1 overflow-auto select-none", rows.length === 0 && "hidden")}
         onMouseLeave={() => setHoveredGroup(null)}
+        onScroll={(e) => {
+          // Written straight to the DOM, not through state: this fires on
+          // every frame of a scroll, and re-rendering a virtualized list to
+          // move a heading sideways would be the most expensive way possible
+          // to set one number.
+          const heading = headingRef.current;
+          if (heading) heading.scrollLeft = e.currentTarget.scrollLeft;
+        }}
       >
         <div
           className="relative w-full"
-          style={{ height: virtualizer.getTotalSize() + 24 }}
+          style={{ height: virtualizer.getTotalSize() + 24, minWidth: rowMinWidth }}
         >
           {virtualizer.getVirtualItems().map((item) => {
             const row = rows[item.index];
@@ -379,6 +424,7 @@ function TrackListImpl({
                     isSingle={row.isSingle}
                     selected={selection.has(row.track.id)}
                     query={searchQuery}
+                    showArtwork={showArtwork}
                     onRowClick={onRowClick}
                   />
                 )}
@@ -406,6 +452,55 @@ function TrackListImpl({
  * into no-ops. `searchValue` still changes per keystroke, which is correct:
  * the search field lives in here. */
 export const TrackList = memo(TrackListImpl);
+
+/** A column heading, which is also the control that sorts by it.
+ *
+ * The button fills the heading cell rather than wrapping just the label: a
+ * 4-character word is a small target, and the empty half of a wide column is
+ * exactly where a pointer lands. It does not swallow the resize handle, which
+ * sits above it and takes its own pointer events — a press that starts on the
+ * divider never reaches this button, so a drag can't end in a re-sort.
+ *
+ * The arrow appears only on the column being sorted by; nine permanent arrows
+ * would say nothing. Under Recently Added no column carries one, which is
+ * honest — that order is not any column's.
+ *
+ * `title` keeps the column's own hint where it has one: the tooltip explaining
+ * what "Plays" counts is worth more than a second copy of "Sort by Plays",
+ * which the arrow and the cursor already imply. */
+function ColumnSortButton({
+  column,
+  sort,
+  onSortChange,
+}: {
+  column: ColumnDef;
+  sort: TrackSortState;
+  onSortChange: (sort: TrackSortState) => void;
+}) {
+  const active = isSortedBy(column.key, sort);
+  const descending = sortsDescending(sort);
+  const Arrow = descending ? ChevronDown : ChevronUp;
+  return (
+    <button
+      type="button"
+      className={cn(
+        "flex w-full items-center gap-0.5 truncate rounded-sm hover:text-foreground focus-visible:outline-1 focus-visible:outline-ring",
+        JUSTIFY[column.align],
+        active && "text-foreground",
+      )}
+      title={column.hint}
+      aria-label={
+        active
+          ? `Sort by ${column.label}, currently ${descending ? "descending" : "ascending"}`
+          : `Sort by ${column.label}`
+      }
+      onClick={() => onSortChange(nextSortFor(column.key, sort))}
+    >
+      <span className="truncate">{column.label}</span>
+      {active && <Arrow className="size-3 shrink-0" aria-hidden />}
+    </button>
+  );
+}
 
 /** The divider at a column's right edge.
  *
@@ -652,17 +747,25 @@ const AlbumHeader = memo(function AlbumHeader({
 /** Rules mirror the tuned List separators: a line above the first track, one
  * between tracks (each non-first row's border-t), and one below when the
  * album is a single track. */
+/** Height of the cover in a flat row. 24px is what fits between the row's own
+ * `py-1` without pushing the text off its baseline, and it is served by the
+ * 80px artwork rung, so it stays sharp on a retina panel. */
+const ROW_ART_SIZE = 24;
+
 const TrackRow = memo(function TrackRow({
   track,
   isSingle,
   selected,
   query,
+  showArtwork,
   onRowClick,
 }: {
   track: Track;
   isSingle: boolean;
   selected: boolean;
   query: string;
+  /** Flat view only — see the note where TrackList computes it. */
+  showArtwork: boolean;
   onRowClick: (trackId: string, event: React.MouseEvent) => void;
 }) {
   return (
@@ -675,8 +778,16 @@ const TrackRow = memo(function TrackRow({
       )}
       onClick={(e) => onRowClick(track.id, e)}
     >
-      <span className="truncate text-sm" title={track.title}>
-        <Highlight text={track.title} query={query} />
+      {/* The cover rides in the Title cell rather than in a column of its own:
+          a column would need a heading, a width to drag and an order to sort
+          by, and none of the three means anything for a picture. */}
+      <span className="flex min-w-0 items-center gap-2 text-sm" title={track.title}>
+        {showArtwork && (
+          <ArtworkThumb trackId={track.id} size={ROW_ART_SIZE} className="shrink-0" />
+        )}
+        <span className="truncate">
+          <Highlight text={track.title} query={query} />
+        </span>
       </span>
       <span className="truncate text-xs text-muted-foreground">
         <Highlight text={track.artist} query={query} />
@@ -701,6 +812,12 @@ const TrackRow = memo(function TrackRow({
       </span>
       <span className="text-right text-xs tabular-nums text-muted-foreground/70">
         {track.playCount > 0 ? track.playCount : "—"}
+      </span>
+      <span
+        className="truncate text-right text-xs tabular-nums text-muted-foreground/70"
+        title={formatDate(track.dateAdded)}
+      >
+        {formatDate(track.dateAdded)}
       </span>
     </div>
   );

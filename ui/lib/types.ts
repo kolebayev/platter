@@ -290,7 +290,35 @@ export interface ConvertItemBatch {
 export type AppView = "library" | "convert" | "stats";
 
 export type TrackGrouping = "none" | "artist" | "album" | "genre";
-export type TrackSort = "title" | "artist" | "albumOrder" | "recentlyAdded";
+
+/** What the list is ordered by.
+ *
+ * The four the View menu has always offered are joined here by one key per
+ * remaining column heading, because every heading is clickable and a heading
+ * that sorts by nothing looks broken. Album has no key of its own: sorting by
+ * album and not by track number within it would scatter each album's tracks,
+ * so the Album heading asks for `albumOrder`. */
+export type TrackSortKey =
+  | "title"
+  | "artist"
+  | "albumOrder"
+  | "genre"
+  | "trackNumber"
+  | "year"
+  | "time"
+  | "bitrate"
+  | "plays"
+  | "recentlyAdded";
+
+/** `asc` is the order the key is defined in, `desc` that order reversed — so
+ * "Recently Added, ascending" is newest first, the direction the name of the
+ * sort implies, and descending is oldest first. */
+export type SortDirection = "asc" | "desc";
+
+export interface TrackSortState {
+  key: TrackSortKey;
+  dir: SortDirection;
+}
 
 export const GROUPING_LABELS: Record<TrackGrouping, string> = {
   none: "No Grouping",
@@ -299,12 +327,6 @@ export const GROUPING_LABELS: Record<TrackGrouping, string> = {
   genre: "Genre",
 };
 
-export const SORT_LABELS: Record<TrackSort, string> = {
-  title: "Title",
-  artist: "Artist",
-  albumOrder: "Album Order",
-  recentlyAdded: "Recently Added",
-};
 
 /** Genres the Classic's Genres menu commonly shows — free text still works. */
 export const COMMON_GENRES = [

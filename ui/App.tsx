@@ -65,8 +65,10 @@ import type {
   Progress,
   Track,
   TrackGrouping,
-  TrackSort,
+  TrackSortState,
 } from "@/lib/types";
+import { SIDE_PANEL_MAX_WIDTH, SIDE_PANEL_WIDTH } from "@/lib/layout";
+import { readSortPrefs, writeSortPrefs, type SortPrefs } from "@/lib/sort";
 
 // Split out of the entry chunk: neither tab is the default view, and together
 // they are the bulk of the UI code. Loading them on first visit also keeps
@@ -102,8 +104,14 @@ export default function App() {
   const [grouping, setGrouping] = useState<TrackGrouping>(
     () => (localStorage.getItem("trackGrouping") as TrackGrouping) || "artist",
   );
-  const [sort, setSort] = useState<TrackSort>(
-    () => (localStorage.getItem("trackSort") as TrackSort) || "albumOrder",
+  /** One sort per grouping, not one for the list. Flat view opens on artist
+   * A–Z and the grouped views on album order, and switching between them must
+   * not rewrite the order of the one being left; see lib/sort.ts. */
+  const [sortPrefs, setSortPrefs] = useState<SortPrefs>(readSortPrefs);
+  const sort = sortPrefs[grouping];
+  const setSort = useCallback(
+    (next: TrackSortState) => setSortPrefs((prefs) => ({ ...prefs, [grouping]: next })),
+    [grouping],
   );
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [collapsedAlbums, setCollapsedAlbums] = useState<Set<string>>(new Set());
@@ -112,7 +120,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showDrivePicker, setShowDrivePicker] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
-  const [detailWidth, setDetailWidth] = useState(440);
+  const [detailWidth, setDetailWidth] = useState(SIDE_PANEL_WIDTH);
   const [view, setView] = useState<AppView>(() => {
     const stored = localStorage.getItem("appView");
     // A stale value from an older build must not blank the window.
@@ -168,9 +176,9 @@ export default function App() {
     log.info("library.grouping", grouping);
   }, [grouping]);
   useEffect(() => {
-    localStorage.setItem("trackSort", sort);
-    log.info("library.sort", sort);
-  }, [sort]);
+    writeSortPrefs(sortPrefs);
+    log.info("library.sort", `${grouping}: ${sort.key} ${sort.dir}`);
+  }, [sortPrefs, grouping, sort]);
   useEffect(() => {
     localStorage.setItem("appView", view);
     log.info("view.change", view);
@@ -580,10 +588,14 @@ export default function App() {
     const startWidth = detailRef.current?.offsetWidth ?? detailWidth;
     let latest = startWidth;
     const onMove = (ev: MouseEvent) => {
-      // Floor matches Convert's fixed 320: that panel carries a form of the
-      // same shape at that width, so it is demonstrably usable, and anything
-      // wider would stop the two tabs being made to line up.
-      latest = Math.min(720, Math.max(320, startWidth + (startX - ev.clientX)));
+      // The floor is the width both tabs start at — see lib/layout.ts. Below
+      // it the two panes would stop lining up at their narrowest, and that
+      // panel is demonstrably usable there: Convert carries a form of the same
+      // shape at exactly this width.
+      latest = Math.min(
+        SIDE_PANEL_MAX_WIDTH,
+        Math.max(SIDE_PANEL_WIDTH, startWidth + (startX - ev.clientX)),
+      );
       if (detailRef.current) detailRef.current.style.width = `${latest}px`;
     };
     const onUp = () => {

@@ -126,7 +126,11 @@ function StatsBody({
   ];
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    // h-full, not flex-1: the tab's wrapper in App is a plain block, so there
+    // is no flex line here to take a share of — the pane has to claim the
+    // height it was given and scroll inside it. With flex-1 the element sized
+    // to its content instead, and the page behind it did the scrolling.
+    <div className="h-full overflow-y-auto">
       {/* The covers are the B2C moment: a full-width seamless wall of what
           the device actually played. Everything below stays quiet. */}
       {covers.length >= 4 && <CoverWall ids={covers} />}

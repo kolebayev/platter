@@ -22,6 +22,7 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
 import { formatBytes, formatDuration } from "@/lib/format";
+import { SIDE_PANEL_WIDTH } from "@/lib/layout";
 import { notifyIfBackground } from "@/lib/notify";
 import { unsubscribe } from "@/lib/events";
 // Aliased: `log` in this file is the job's own on-screen ring buffer.
@@ -317,7 +318,13 @@ function ConvertViewImpl({
           onClear={clearRows}
         />
 
-        <div className="flex w-80 shrink-0 flex-col gap-5 overflow-y-auto border-l p-5">
+        {/* Width from the shared constant, not a utility class: Library's
+            inspector opens at the same number, and the edge must not jump when
+            the tabs are switched. */}
+        <div
+          className="flex shrink-0 flex-col gap-5 overflow-y-auto border-l p-5"
+          style={{ width: SIDE_PANEL_WIDTH }}
+        >
           <Section label="Format">
             <div className="grid grid-cols-2 gap-1.5">
               {formats.map((f) => (
