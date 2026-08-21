@@ -1044,6 +1044,10 @@ pub async fn remove_tracks(
         let db = lib.db()?;
         for id in &ids {
             if let Some(track) = lib.resolve(id) {
+                // Before the free: the device path lives in the record, and
+                // the file behind it is deleted once the write that drops the
+                // record has actually landed.
+                lib.queue_file_delete(id);
                 unsafe { gpod_remove_track(db, track) };
                 // The pointer is freed. Mutations no longer rebuild
                 // live_refs, so it must be dropped here or the next command
