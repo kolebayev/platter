@@ -61,6 +61,13 @@ a hand-written C bridge. macOS only.
   always before a write. Never back up one without the other. `itdb_write`
   deletes the file, so plays the device wrote after we opened are lost unless
   they were backed up first.
+- **Removal deletes the audio, but only after the write.** `gpod_remove_track`
+  frees the record and nothing else, so a removed track used to leave its file
+  on the device for good. `remove_tracks` now queues the device path in
+  `Library::pending_deletes` and `save()` sweeps it once `itdb_write` has
+  returned. Never move that deletion earlier: a delete followed by a failed
+  write leaves the on-disk database pointing at audio that is gone. A path a
+  surviving record still claims is skipped.
 - **libgpod is not thread-safe.** Every call goes through the single
   `Mutex<Library>`. Commands run inside the `blocking()` helper
   (`commands.rs`) so FFI and subprocesses never stall a tokio worker.
