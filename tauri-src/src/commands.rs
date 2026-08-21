@@ -359,7 +359,7 @@ pub async fn request_volume_access(app: AppHandle) -> Result<AccessRequest, Stri
     .await
 }
 
-/// The app-icon trio skips the `blocking()` pool: a base64 encode of four
+/// The app-icon trio skips the `blocking()` pool: a base64 encode of five
 /// small PNGs, a sub-kilobyte file write and a hop to the main thread are all
 /// bounded work that never touches libgpod or the library mutex.
 #[tauri::command]
@@ -1044,6 +1044,10 @@ pub async fn remove_tracks(
         let db = lib.db()?;
         for id in &ids {
             if let Some(track) = lib.resolve(id) {
+                // Before the free: the device path lives in the record, and
+                // the file behind it is deleted once the write that drops the
+                // record has actually landed.
+                lib.queue_file_delete(id);
                 unsafe { gpod_remove_track(db, track) };
                 // The pointer is freed. Mutations no longer rebuild
                 // live_refs, so it must be dropped here or the next command
@@ -1260,6 +1264,15 @@ struct JobEvents {
     done: AtomicUsize,
     /// Display name of the most recently started file.
     current: std::sync::Mutex<String>,
+    /// What each finished file turned out to be, by batch index. Arrives just
+    /// before the outcome it belongs to and is consumed by the line written
+    /// there, so the map holds at most one entry per running worker.
+    stats: std::sync::Mutex<std::collections::HashMap<usize, convert::OutputStats>>,
+    /// Name and start instant of every file still converting, by batch index.
+    /// The log line for a finished track is written where the outcome is known
+    /// (`item_done`), which is handed an index and nothing else — the name and
+    /// the clock have to be carried over from `started`.
+    in_flight: std::sync::Mutex<std::collections::HashMap<usize, (String, std::time::Instant)>>,
     pending: std::sync::Mutex<Vec<serde_json::Value>>,
     pending_items: std::sync::Mutex<Vec<serde_json::Value>>,
     last_flush: std::sync::Mutex<std::time::Instant>,
@@ -1277,6 +1290,8 @@ impl JobEvents {
             seq: AtomicUsize::new(0),
             done: AtomicUsize::new(0),
             current: std::sync::Mutex::new(String::new()),
+            in_flight: std::sync::Mutex::new(std::collections::HashMap::new()),
+            stats: std::sync::Mutex::new(std::collections::HashMap::new()),
             pending: std::sync::Mutex::new(Vec::new()),
             pending_items: std::sync::Mutex::new(Vec::new()),
             last_flush: std::sync::Mutex::new(std::time::Instant::now()),
@@ -1375,7 +1390,15 @@ impl JobEvents {
 impl convert::ConvertObserver for JobEvents {
     fn started(&self, index: usize, name: &str) {
         *self.current.lock().unwrap_or_else(|e| e.into_inner()) = name.to_string();
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(index, (name.to_string(), std::time::Instant::now()));
         self.push_status(index, "converting", None);
+        // One line per track, not one per run: a job that converted everything
+        // used to leave a log holding a header, a footer and whatever ffmpeg
+        // happened to complain about, with no record of the tracks themselves.
+        self.push_line("cmd", Some(name), "converting…");
         self.emit_progress("converting", Some(0.0));
     }
 
@@ -1383,17 +1406,67 @@ impl convert::ConvertObserver for JobEvents {
         self.emit_progress("converting", Some(fraction));
     }
 
+    fn wants_stats(&self) -> bool {
+        true
+    }
+
+    fn item_stats(&self, index: usize, stats: &convert::OutputStats) {
+        self.stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(index, stats.clone());
+    }
+
     fn log(&self, level: &'static str, file: Option<&str>, line: &str) {
         self.push_line(level, file, line);
     }
 
     fn item_done(&self, index: usize, outcome: &convert::Prepared) {
+        let started = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&index);
+        // Cancelled items can reach this without a `started` — the worker loop
+        // checks the flag before it claims an index.
+        let (name, took) = match started {
+            Some((name, at)) => (Some(name), Some(at.elapsed())),
+            None => (None, None),
+        };
+        let took = took.map(|d| format!(" in {:.1}s", d.as_secs_f64()));
+        let took = took.as_deref().unwrap_or("");
+        let stats = self
+            .stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&index);
         match outcome {
-            convert::Prepared::Ready(_) => self.push_status(index, "converted", None),
-            convert::Prepared::Rejected(reason) => {
-                self.push_status(index, "failed", Some(reason.as_str()))
+            convert::Prepared::Ready(_) => {
+                self.push_status(index, "converted", None);
+                let what = stats.map(|s| format!(" · {}", s.summary()));
+                self.push_line(
+                    "ok",
+                    name.as_deref(),
+                    &format!("converted{took}{}", what.as_deref().unwrap_or("")),
+                );
             }
-            convert::Prepared::Cancelled => self.push_status(index, "cancelled", None),
+            convert::Prepared::Rejected(reason) => {
+                self.push_status(index, "failed", Some(reason.as_str()));
+                // A conversion failure carries ffmpeg's whole stderr tail, and
+                // every line of it already reached the log under this same
+                // name — printing the joined copy too says it all twice. The
+                // rejections that never spawned ffmpeg (unreadable source, bad
+                // cue) are the ones whose text nothing else logged.
+                let line = match reason.starts_with("conversion failed:") {
+                    true => format!("failed{took}"),
+                    false => format!("failed{took}: {reason}"),
+                };
+                self.push_line("error", name.as_deref(), &line);
+            }
+            convert::Prepared::Cancelled => {
+                self.push_status(index, "cancelled", None);
+                self.push_line("cmd", name.as_deref(), "cancelled");
+            }
         }
     }
 

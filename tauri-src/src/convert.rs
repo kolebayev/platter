@@ -181,6 +181,12 @@ impl TargetSpec {
 /// its child with `ConvertControl` and is cancelled that way instead.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The headroom check decodes a whole file rather than reading a header, so it
+/// cannot share `TOOL_TIMEOUT`. Decoding runs at a few hundred times realtime;
+/// this covers a multi-hour set on a slow machine and still bounds a wedged
+/// binary.
+const MEASURE_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// `Command::output` with a deadline. std has no timed wait, so a watchdog
 /// thread SIGKILLs the child if it outstays the limit and the normal
 /// `wait_with_output` then returns as it would for any killed process. Reading
@@ -1150,6 +1156,10 @@ fn muxer_args(format: TargetFormat) -> Vec<String> {
 /// also silence the warnings that do mean something.
 fn is_self_inflicted_noise(line: &str) -> bool {
     line.contains("extension is not .m4a nor .m4v")
+        // swscale says this about the cover art whenever we normalize one —
+        // it is a remark about the JPEG we chose to re-encode, fires on every
+        // track of an album with art, and names nothing the user can act on.
+        || line.contains("deprecated pixel format used")
 }
 
 fn run_ffmpeg(
@@ -1323,10 +1333,17 @@ fn convert_one(
     };
 
     let tmp = dst.with_extension(format!("{}.part", target.format.ext()));
-    let display = dst
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    // The name the rest of the log already uses for this track — `WorkItem::
+    // display`: the source file, except for a cue slice, which has no file of
+    // its own and is known by what it is being written as. ffmpeg's lines used
+    // to carry the destination instead, so one track appeared in the log under
+    // two names, once as .flac and once as .m4a.
+    let display = match cue {
+        Some(_) => dst.file_stem(),
+        None => src.file_name(),
+    }
+    .map(|n| n.to_string_lossy().into_owned())
+    .unwrap_or_default();
     // A cue slice's span, not the whole album image — otherwise the per-file
     // bar for track 1 of 12 would creep to 8% and stop.
     let effective_duration = match cue {
@@ -1337,7 +1354,7 @@ fn convert_one(
         None => probe.duration_s,
     };
 
-    let attempt = |art: &ArtPlan, force_norm: bool| -> Result<(), String> {
+    let attempt = |art: &ArtPlan, force_norm: bool, trim_db: Option<f64>| -> Result<(), String> {
         let mut cmd = Command::new(&tools.ffmpeg);
         // -v warning rather than -v error: at error level there is essentially
         // nothing to show, and the log pane exists to be read.
@@ -1405,8 +1422,15 @@ fn convert_one(
             }
         }
 
-        if !filters.is_empty() {
-            cmd.args(["-af", &filters.join(",")]);
+        // Attenuation goes in front of the resampler so any dither the chain
+        // adds is still the last thing to touch the samples.
+        let chain: Vec<String> = trim_db
+            .map(|db| format!("volume={db:.2}dB"))
+            .into_iter()
+            .chain(filters.iter().cloned())
+            .collect();
+        if !chain.is_empty() {
+            cmd.args(["-af", &chain.join(",")]);
         }
         if copy_codec {
             cmd.args(["-c:a", "copy"]);
@@ -1455,13 +1479,51 @@ fn convert_one(
     // Every rung checks the cancel flag first: a SIGKILLed attempt looks
     // exactly like a genuine failure from here, and without the check a
     // cancelled file would fire two more ffmpeg runs on its way out.
-    let mut result = attempt(&art, false);
+    let dropped_art = ArtPlan::None;
+    let mut used_art = &art;
+    let mut used_norm = false;
+    let mut result = attempt(&art, false, None);
     if result.is_err() && !control.cancelled() && !matches!(art, ArtPlan::None) {
         let _ = std::fs::remove_file(&tmp);
-        result = attempt(&art, true);
+        used_norm = true;
+        result = attempt(&art, true, None);
         if result.is_err() && !control.cancelled() {
             let _ = std::fs::remove_file(&tmp);
-            result = attempt(&ArtPlan::None, false);
+            used_art = &dropped_art;
+            used_norm = false;
+            result = attempt(&dropped_art, false, None);
+        }
+    }
+
+    // A lossy encoder hands back a waveform that overshoots the one it was
+    // given, and the device clips what it cannot represent. Nothing predicts
+    // the overshoot from the source — this master's true peak is −0.05 dBTP
+    // and it still decodes to +1.45 dBFS — so the encoded file is measured and
+    // re-encoded attenuated when it would clip. Lossless targets are exact and
+    // are left alone.
+    if result.is_ok() && !target.format.is_lossless() {
+        let mut trim = 0.0;
+        for _ in 0..MAX_HEADROOM_PASSES {
+            if control.cancelled() {
+                break;
+            }
+            let Some(peak) = decoded_peak_db(&tools.ffmpeg, &tmp) else {
+                break;
+            };
+            let Some(step) = headroom_gain_db(peak) else {
+                break;
+            };
+            trim += step;
+            obs.log(
+                "warn",
+                Some(&display),
+                &format!("decodes back to {peak:+.2} dBFS — re-encoding {trim:.2} dB down"),
+            );
+            let _ = std::fs::remove_file(&tmp);
+            result = attempt(used_art, used_norm, Some(trim));
+            if result.is_err() {
+                break;
+            }
         }
     }
 
@@ -1485,6 +1547,33 @@ fn convert_one(
 /// MP3, not a silently forwarded original.
 #[allow(clippy::too_many_arguments)]
 fn prepare_one(
+    item: &WorkItem,
+    out_dir: &Path,
+    layout: OutLayout,
+    names: &NameReserver,
+    art_cache: &ArtCache,
+    target: &TargetSpec,
+    control: &ConvertControl,
+    obs: &dyn ConvertObserver,
+    index: usize,
+) -> Prepared {
+    let outcome = prepare_one_uncounted(
+        item, out_dir, layout, names, art_cache, target, control, obs, index,
+    );
+    // Reading the result back covers the passthrough branches too, which
+    // produce a "converted" file nothing in this function ever encoded.
+    if let (Prepared::Ready(path), true) = (&outcome, obs.wants_stats()) {
+        if let Some(tools) = tools() {
+            if let Some(probe) = probe_media(&tools.ffprobe, path) {
+                obs.item_stats(index, &OutputStats::from_probe(&probe, path));
+            }
+        }
+    }
+    outcome
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_one_uncounted(
     item: &WorkItem,
     out_dir: &Path,
     layout: OutLayout,
@@ -1600,11 +1689,181 @@ pub fn reject_pairing(probe: &MediaProbe, target: &TargetSpec) -> Option<String>
     None
 }
 
+/// Above this, in dBFS, a decode is asking for sample values the device has no
+/// room to represent.
+///
+/// A lossy encoder is not required to keep its reconstruction inside full
+/// scale and none of them do: this album's master peaks at −0.18 dBFS and
+/// comes back out of AAC at +1.45. The iPod's output stage is fixed point, so
+/// every one of those samples saturates — a handful at a time, heard as a
+/// short bright click on loud passages. A master sitting exactly on full scale
+/// is not a problem and is deliberately left alone; only the overshoot is.
+const LOSSY_CLIP_CEILING_DB: f64 = 0.0;
+
+/// What a corrective re-encode aims for. Deliberately below the ceiling:
+/// attenuating the input by N dB does not move the decoded peak by exactly N,
+/// so aiming at the ceiling itself lands half the files a hair over it and
+/// buys a second re-encode for nothing. A dB of headroom is inaudible as a
+/// level change.
+const LOSSY_PEAK_TARGET_DB: f64 = -1.0;
+
+/// How many corrective re-encodes one file may spend. Attenuating the input by
+/// N dB moves the decoded peak by very nearly N, so the first correction lands
+/// almost exactly on the ceiling; the second is there for the encoder that
+/// does something less linear, and beyond that the file is left as it is
+/// rather than transcoded a fourth time.
+const MAX_HEADROOM_PASSES: usize = 2;
+
+/// Attenuation to re-encode with, given what the last encode decoded back to.
+/// None when it already clears the ceiling — including the silent file, whose
+/// peak parses as `-inf`.
+fn headroom_gain_db(peak_db: f64) -> Option<f64> {
+    (peak_db > LOSSY_CLIP_CEILING_DB).then_some(LOSSY_PEAK_TARGET_DB - peak_db)
+}
+
+/// The overall `Peak level dB:` out of an astats summary. Per-channel blocks
+/// carry the same key, so the first hit wins — with `measure_perchannel=none`
+/// asked for below, the only one printed is the overall figure.
+fn parse_peak_level_db(log: &str) -> Option<f64> {
+    log.lines()
+        .find_map(|line| line.split("Peak level dB:").nth(1))
+        .and_then(|value| value.trim().parse::<f64>().ok())
+}
+
+/// What `path` decodes back to, as a sample peak in dBFS. Decoding is forced
+/// to float: the integer pipeline saturates at 0 dB and would report every
+/// overshooting file as sitting exactly on full scale.
+fn decoded_peak_db(ffmpeg: &Path, path: &Path) -> Option<f64> {
+    let out = output_with_timeout(
+        Command::new(ffmpeg)
+            .args(["-hide_banner", "-nostdin", "-v", "info", "-nostats", "-i"])
+            .arg(path)
+            .args([
+                "-map",
+                "0:a:0",
+                "-af",
+                "aformat=fltp,astats=measure_perchannel=none",
+                "-f",
+                "null",
+                "-",
+            ]),
+        MEASURE_TIMEOUT,
+    )
+    .ok()?;
+    parse_peak_level_db(&String::from_utf8_lossy(&out.stderr))
+}
+
 /// Everything a caller can learn while a batch runs. The old callback fired
 /// only when an item finished, which left the bar frozen for the length of one
 /// ten-minute DSD file.
+/// Decimal units, matching `formatBytes` in the UI — a log line reading 27.3 MB
+/// beside a footer reading 28.6 MB for the same bytes is its own bug report.
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1000 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    let mut unit = "B";
+    for u in ["KB", "MB", "GB", "TB"] {
+        value /= 1000.0;
+        unit = u;
+        if value < 1000.0 {
+            break;
+        }
+    }
+    let digits = if value < 10.0 {
+        2
+    } else if value < 100.0 {
+        1
+    } else {
+        0
+    };
+    format!("{value:.digits$} {unit}")
+}
+
+/// What one finished file actually turned out to be, read back from the output
+/// instead of derived from the request. A passthrough that skipped the encode,
+/// an encoder that clamped a rate, or a VBR pass that landed nowhere near its
+/// nominal bitrate would all be reported as whatever was asked for otherwise.
+#[derive(Clone, Debug)]
+pub struct OutputStats {
+    /// Upper-cased for display: ALAC, MP3, AAC, FLAC, PCM.
+    pub codec: String,
+    pub sample_rate: u32,
+    pub channels: u32,
+    /// None for lossy output, where bit depth belongs to the decoder rather
+    /// than to the file.
+    pub bits: Option<u32>,
+    pub bytes: u64,
+    /// Averaged over the whole file. Exact, unlike a nominal encoder setting.
+    pub kbps: u32,
+}
+
+impl OutputStats {
+    /// "ALAC 16-bit 44.1 kHz stereo · 27.3 MB · 916 kbps" — what the file is,
+    /// then how big it came out, which is the order someone reads it in.
+    pub fn summary(&self) -> String {
+        let mut out = self.codec.clone();
+        if let Some(bits) = self.bits {
+            out.push_str(&format!(" {bits}-bit"));
+        }
+        if self.sample_rate > 0 {
+            let khz = self.sample_rate as f64 / 1000.0;
+            // 44.1 and 88.2 need the decimal; on 48 and 96 it is noise.
+            if (khz - khz.round()).abs() < 0.05 {
+                out.push_str(&format!(" {khz:.0} kHz"));
+            } else {
+                out.push_str(&format!(" {khz:.1} kHz"));
+            }
+        }
+        match self.channels {
+            0 => {}
+            1 => out.push_str(" mono"),
+            2 => out.push_str(" stereo"),
+            n => out.push_str(&format!(" {n} ch")),
+        }
+        out.push_str(&format!(" · {}", format_bytes(self.bytes)));
+        if self.kbps > 0 {
+            out.push_str(&format!(" · {} kbps", self.kbps));
+        }
+        out
+    }
+
+    fn from_probe(probe: &MediaProbe, path: &Path) -> OutputStats {
+        let bytes = match probe.file_bytes {
+            0 => std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+            n => n,
+        };
+        let bps = match probe.bit_rate {
+            0 if probe.duration_s > 0.0 => (bytes as f64 * 8.0 / probe.duration_s) as u64,
+            n => n,
+        };
+        let codec = match probe.codec.strip_prefix("pcm_") {
+            Some(_) => "PCM".to_string(),
+            None => probe.codec.to_uppercase(),
+        };
+        OutputStats {
+            codec,
+            sample_rate: probe.sample_rate,
+            channels: probe.channels,
+            bits: probe.is_lossless().then_some(probe.bits),
+            bytes,
+            kbps: (bps / 1000) as u32,
+        }
+    }
+}
+
 pub trait ConvertObserver: Sync {
     fn started(&self, _index: usize, _name: &str) {}
+    /// Whether to read each finished file back. The probe costs one ffprobe
+    /// spawn per item, which is worth it for the Convert tab's log and pure
+    /// waste for the drag-and-drop import, whose observer only counts files.
+    fn wants_stats(&self) -> bool {
+        false
+    }
+    /// What the finished file turned out to be. Emitted before `item_done`,
+    /// and only for items that produced one.
+    fn item_stats(&self, _index: usize, _stats: &OutputStats) {}
     /// 0..1 within the current file. Never called for stream-copy items or
     /// sources whose duration is unknown — there is no denominator.
     fn file_progress(&self, _index: usize, _fraction: f64) {}
@@ -1750,13 +2009,11 @@ pub fn prepare_batch_into(
     let art_cache = ArtCache::new(&art_dir);
     let names = NameReserver::new(out_dir);
 
-    // Half the cores: ffmpeg's ALAC path is single-threaded but the decode +
-    // resample chain still saturates a core; leave headroom for the UI.
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get() / 2)
-        .unwrap_or(4)
-        .clamp(2, 8)
-        .min(items.len());
+    // Two, whatever the machine has. Half the cores left the UI responsive but
+    // not the audio: eight decode+resample chains starve CoreAudio's render
+    // thread, and music playing while a batch runs stutters. Two still halves
+    // the wall clock against a plain queue, which is where most of the win was.
+    let workers = 2.min(items.len());
 
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
@@ -1832,6 +2089,36 @@ mod tests {
         assert_eq!(target_rate(32000), 44100);
         assert_eq!(target_rate(64000), 48000);
         assert_eq!(target_rate(0), 44100);
+    }
+
+    #[test]
+    fn headroom_gain_only_answers_for_an_overshoot() {
+        assert_eq!(headroom_gain_db(-3.0), None);
+        // A master that touches full scale exactly is representable and must
+        // not be turned down.
+        assert_eq!(headroom_gain_db(LOSSY_CLIP_CEILING_DB), None);
+        // Silence.
+        assert_eq!(headroom_gain_db(f64::NEG_INFINITY), None);
+        // Peak measured off a real AAC encode of this album's master.
+        let gain = headroom_gain_db(1.45).expect("overshoot needs a trim");
+        assert!((gain - -2.45).abs() < 1e-9, "got {gain}");
+        // The trim aims below the ceiling, so a re-encode that tracked it
+        // exactly would not trigger a second pass.
+        assert_eq!(headroom_gain_db(1.45 + gain), None);
+    }
+
+    #[test]
+    fn peak_level_comes_out_of_an_astats_summary() {
+        let log = "[Parsed_astats_1 @ 0x14] Overall\n\
+                   [Parsed_astats_1 @ 0x14] DC offset: 0.000031\n\
+                   [Parsed_astats_1 @ 0x14] Peak level dB: 1.451928\n\
+                   [Parsed_astats_1 @ 0x14] RMS level dB: -9.8\n";
+        assert_eq!(parse_peak_level_db(log), Some(1.451928));
+        assert_eq!(
+            parse_peak_level_db("[x] Peak level dB: -inf\n"),
+            Some(f64::NEG_INFINITY)
+        );
+        assert_eq!(parse_peak_level_db("no summary here"), None);
     }
 
     #[test]
@@ -2017,6 +2304,64 @@ mod tests {
         // The literal ffmpeg emits, with the muxer tag it carries.
         assert!(is_self_inflicted_noise(
             "[ipod @ 0xb42c28280] Warning, extension is not .m4a nor .m4v Quicktime/Ipod might not play the file"
+        ));
+    }
+
+    fn stats(
+        codec: &str,
+        rate: u32,
+        ch: u32,
+        bits: Option<u32>,
+        bytes: u64,
+        kbps: u32,
+    ) -> OutputStats {
+        OutputStats {
+            codec: codec.into(),
+            sample_rate: rate,
+            channels: ch,
+            bits,
+            bytes,
+            kbps,
+        }
+    }
+
+    #[test]
+    fn a_lossless_output_is_described_with_its_depth_and_rate() {
+        assert_eq!(
+            stats("ALAC", 44100, 2, Some(16), 27_300_000, 916).summary(),
+            "ALAC 16-bit 44.1 kHz stereo · 27.3 MB · 916 kbps"
+        );
+        // 48 and 96 kHz read as noise with a trailing .0.
+        assert_eq!(
+            stats("FLAC", 48000, 1, Some(24), 9_540_000, 1411).summary(),
+            "FLAC 24-bit 48 kHz mono · 9.54 MB · 1411 kbps"
+        );
+    }
+
+    #[test]
+    fn a_lossy_output_claims_no_bit_depth() {
+        // Bit depth for MP3/AAC is a property of whatever decodes it, so the
+        // probe's inferred value must not be presented as a fact about the file.
+        assert_eq!(
+            stats("MP3", 44100, 2, None, 9_500_000, 192).summary(),
+            "MP3 44.1 kHz stereo · 9.50 MB · 192 kbps"
+        );
+    }
+
+    #[test]
+    fn an_unknown_bitrate_is_left_out_rather_than_printed_as_zero() {
+        assert_eq!(
+            stats("PCM", 44100, 2, Some(16), 1000, 0).summary(),
+            "PCM 16-bit 44.1 kHz stereo · 1.00 KB"
+        );
+    }
+
+    #[test]
+    fn the_cover_art_scalers_pixel_format_warning_is_dropped() {
+        // The literal swscale emits while normalizing a cover, once per track
+        // of an album that has one.
+        assert!(is_self_inflicted_noise(
+            "[swscaler @ 0x7e2bf0000] deprecated pixel format used, make sure you did set range correctly"
         ));
     }
 

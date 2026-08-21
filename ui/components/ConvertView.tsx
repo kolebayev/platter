@@ -22,6 +22,7 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
 import { formatBytes, formatDuration } from "@/lib/format";
+import { SIDE_PANEL_WIDTH } from "@/lib/layout";
 import { notifyIfBackground } from "@/lib/notify";
 import { unsubscribe } from "@/lib/events";
 // Aliased: `log` in this file is the job's own on-screen ring buffer.
@@ -77,6 +78,9 @@ function ConvertViewImpl({
   ipodMount,
   onLibraryChanged,
   onProgressChange,
+  droppedPaths,
+  onDropStaged,
+  isDropTarget,
 }: {
   /** Mount point of the open library, or null when nothing is connected. */
   ipodMount: string | null;
@@ -84,6 +88,13 @@ function ConvertViewImpl({
   onLibraryChanged: () => void;
   /** Surfaces the running job's fraction on the header tab. */
   onProgressChange: (fraction: number | null) => void;
+  /** Files dropped on the window while this tab is visible. Staged, never
+   * started: the settings beside the queue are what the drop is waiting on. */
+  droppedPaths: string[] | null;
+  /** Hands the drop back so the shell can clear it. */
+  onDropStaged: () => void;
+  /** Something is being dragged over the window. */
+  isDropTarget: boolean;
 }) {
   const [formats, setFormats] = useState<FormatOption[]>([]);
   const [rows, setRows] = useState<SourceRow[]>([]);
@@ -227,7 +238,7 @@ function ConvertViewImpl({
     await stage(picked);
   }
 
-  async function stage(paths: string[]) {
+  const stage = useCallback(async (paths: string[]) => {
     setAdding(true);
     setError(null);
     try {
@@ -237,7 +248,22 @@ function ConvertViewImpl({
     } finally {
       setAdding(false);
     }
-  }
+  }, []);
+
+  // A drop is the same gesture as the Add button, and does the same thing:
+  // it lists the files. Starting a job off it would convert with whatever
+  // format and destination happened to be selected, which is the one moment
+  // the user has not looked at them yet.
+  useEffect(() => {
+    if (!droppedPaths || droppedPaths.length === 0) return;
+    onDropStaged();
+    if (running) {
+      // The backend reads the queue while a job runs, so it cannot grow.
+      setError("Wait for this conversion to finish before adding more files.");
+      return;
+    }
+    void stage(droppedPaths);
+  }, [droppedPaths, onDropStaged, running, stage]);
 
   async function chooseFolder() {
     const picked = await openDialog({ directory: true, multiple: false });
@@ -312,12 +338,19 @@ function ConvertViewImpl({
           adding={adding}
           running={running}
           statuses={statuses}
+          isDropTarget={isDropTarget}
           onAddMusic={addMusic}
           onRemove={removeRow}
           onClear={clearRows}
         />
 
-        <div className="flex w-80 shrink-0 flex-col gap-5 overflow-y-auto border-l p-5">
+        {/* Width from the shared constant, not a utility class: Library's
+            inspector opens at the same number, and the edge must not jump when
+            the tabs are switched. */}
+        <div
+          className="flex shrink-0 flex-col gap-5 overflow-y-auto border-l p-5"
+          style={{ width: SIDE_PANEL_WIDTH }}
+        >
           <Section label="Format">
             <div className="grid grid-cols-2 gap-1.5">
               {formats.map((f) => (
@@ -529,6 +562,7 @@ function SourceList({
   adding,
   running,
   statuses,
+  isDropTarget,
   onAddMusic,
   onRemove,
   onClear,
@@ -538,6 +572,8 @@ function SourceList({
   /** Staging the queue is locked while a job reads from it. */
   running: boolean;
   statuses: Map<number, ConvertItemUpdate>;
+  /** Something is being dragged over the window; the queue is where it lands. */
+  isDropTarget: boolean;
   onAddMusic: () => void;
   onRemove: (id: number) => void;
   onClear: () => void;
@@ -555,7 +591,8 @@ function SourceList({
   const addMusic = <AddMusicButton onClick={onAddMusic} disabled={adding || running} />;
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col">
+    // `relative` for the drag overlay below, which frames the whole queue.
+    <div className="relative flex min-w-0 flex-1 flex-col">
       {/* No toolbar over an empty queue. A strip of controls above a panel whose
           whole message is "there is nothing here yet" splits the one action the
           user has into two places and puts the smaller one first. With the queue
@@ -588,7 +625,7 @@ function SourceList({
         <EmptyState
           icon={<Music2 className="size-10" />}
           title="Nothing to Convert"
-          body="Add audio files or a folder. Platter reads each one, works out how big the result will be, and tells you whether it fits before anything is written."
+          body="Add audio files or a folder, or drop them on this window. Platter reads each one, works out how big the result will be, and tells you whether it fits before anything is written."
           action={
             <AddMusicButton onClick={onAddMusic} disabled={adding || running} prominent />
           }
@@ -630,6 +667,12 @@ function SourceList({
             onRemove={onRemove}
           />
         </>
+      )}
+
+      {/* The same frame the track list draws, for the same reason: the drop
+          has a destination, and this is it. */}
+      {isDropTarget && (
+        <div className="pointer-events-none absolute inset-1 rounded-lg border-2 border-dashed border-primary" />
       )}
     </div>
   );
@@ -888,6 +931,25 @@ function EstimatePanel({
   );
 }
 
+/** The log pane's palette, keyed by who is speaking.
+ *
+ * The colours are the queue's, not a second scheme invented for this pane:
+ * `ok` is the same emerald a finished row uses and `error` the same
+ * destructive red, so a track that went green in the list is green here too.
+ *
+ * The rest is a deliberate hierarchy rather than one colour per level. The
+ * lines this app writes about its own progress (`cmd`) sit muted, because a
+ * successful album is mostly those and they are context, not news. ffmpeg's
+ * warnings keep amber. What a reader actually scans for — landed, failed —
+ * takes the only two saturated colours in the pane. */
+const LOG_LEVELS: Record<ConvertLogLine["level"], { glyph: string; color: string }> = {
+  cmd: { glyph: "·", color: "text-muted-foreground" },
+  info: { glyph: "·", color: "text-foreground" },
+  ok: { glyph: "✓", color: DONE_TONE },
+  warn: { glyph: "!", color: "text-amber-600 dark:text-amber-500" },
+  error: { glyph: "✕", color: "text-destructive" },
+};
+
 function ConvertFooter({
   running,
   progress,
@@ -939,19 +1001,19 @@ function ConvertFooter({
           {log.length === 0 ? (
             <p className="text-muted-foreground">No output yet.</p>
           ) : (
-            log.map((line) => (
-              <div
-                key={line.seq}
-                className={cn(
-                  "whitespace-pre-wrap break-all",
-                  line.level === "error" && "text-destructive",
-                  line.level === "warn" && "text-amber-600 dark:text-amber-500",
-                  line.level === "cmd" && "text-muted-foreground",
-                )}
-              >
-                {line.file ? `${line.file}: ${line.line}` : line.line}
-              </div>
-            ))
+            log.map((line) => {
+              const style = LOG_LEVELS[line.level] ?? LOG_LEVELS.info;
+              return (
+                <div key={line.seq} className="whitespace-pre-wrap break-all">
+                  {/* The glyph column is what makes a run scannable: an album
+                      is a wall of identical-looking lines, and the eye finds
+                      ✓/✕ far faster than it reads. */}
+                  <span className={cn("select-none", style.color)}>{style.glyph} </span>
+                  {line.file && <span className="text-muted-foreground">{line.file}: </span>}
+                  <span className={style.color}>{line.line}</span>
+                </div>
+              );
+            })
           )}
         </div>
       )}

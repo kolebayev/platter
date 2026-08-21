@@ -1,17 +1,31 @@
 name: CI
 
+# Pushes to main only. There is deliberately no `pull_request:` trigger.
+#
+# Nothing here is deployed — the artifact is a DMG somebody downloads, so a
+# pull request has no environment to protect and a red tick on it blocks
+# nothing that a red tick on main would not catch first. What it does cost is
+# real: every job needs a macos-14 runner to compile against libgpod, and a
+# pull request that gets pushed to five times pays for that five times over.
+#
+# So main is the only branch with a verdict. Work accumulates on dev, the
+# dev -> main pull request merges unchecked, and the suite runs on the merge
+# commit — which is the commit a bisect lands on anyway. The trade is that a
+# break is found after it is on main rather than before; run `npm test`,
+# `npm run typecheck`, `cargo fmt --check`, `cargo clippy` and `cargo test`
+# locally before promoting, because nothing upstream will.
 on:
   push:
     branches: [master, main]
-  pull_request:
+  # Manual re-run, for when a run needs repeating without an empty commit.
+  workflow_dispatch:
 
-# Superseded pull request pushes are worth cancelling; superseded main pushes
-# are not. Two merges landing back to back would otherwise leave the first
-# merge commit with no CI verdict at all, and that commit is the one a bisect
-# lands on later.
+# Superseded main pushes are NOT worth cancelling: two merges landing back to
+# back would otherwise leave the first merge commit with no verdict at all,
+# and that commit is the one a bisect lands on later.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   # Everything that needs neither libgpod nor a Rust compile. This is the job
@@ -125,11 +139,9 @@ jobs:
   # releases is built the way the release will be — LGPL ffmpeg included, since
   # a build handed to someone else is a build that ships.
   #
-  # Not on pull requests: it is 20 minutes of runner time whose only consumer
-  # is a person asking for a copy, and the tag path covers the rest. Gated on
-  # the fast job so a failing typecheck costs seconds rather than that.
+  # Gated on the fast job so a failing typecheck costs seconds rather than the
+  # 20 minutes this takes.
   dmg:
-    if: github.event_name == 'push'
     needs: frontend
     uses: ./.github/workflows/build-dmg.yml
     with:

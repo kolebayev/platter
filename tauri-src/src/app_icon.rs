@@ -25,7 +25,7 @@ use base64::Engine;
 
 /// The shipped set. Icons are compiled in rather than declared as bundle
 /// resources: `include_bytes!` sidesteps resource paths resolving differently
-/// under `tauri dev` and inside a packaged .app, and four 512x512 PNGs of
+/// under `tauri dev` and inside a packaged .app, and five 512x512 PNGs of
 /// ~150 KB are noise next to the binary.
 ///
 /// These carry a transparent margin the renders in `icons/sources/` do not:
@@ -38,9 +38,18 @@ use base64::Engine;
 /// Adding one is a file in `icons/alt/` plus a line here. Ids are persisted in
 /// settings, so renaming one silently resets anyone who had it selected.
 const ICONS: &[(&str, &str, &[u8])] = &[
-    ("gray", "Gray", include_bytes!("../icons/alt/gray.png")),
-    ("dark", "Dark", include_bytes!("../icons/alt/dark.png")),
-    ("mono", "Mono", include_bytes!("../icons/alt/mono.png")),
+    (
+        "orange",
+        "Orange",
+        include_bytes!("../icons/alt/orange.png"),
+    ),
+    ("green", "Green", include_bytes!("../icons/alt/green.png")),
+    (
+        "purple",
+        "Purple",
+        include_bytes!("../icons/alt/purple.png"),
+    ),
+    ("black", "Black", include_bytes!("../icons/alt/black.png")),
 ];
 
 /// The bundle's own icon — the blue artwork, so Finder, Launchpad and
@@ -51,12 +60,12 @@ const ICONS: &[(&str, &str, &[u8])] = &[
 ///
 /// This is `icon-preview.png`, not the `icon.png` the bundle is built from:
 /// that one has to stay full-bleed for the icns and Icon Composer asset, and
-/// drawing it beside three inset alternates would make the picker tiles
+/// drawing it beside four inset alternates would make the picker tiles
 /// disagree in size the way the Dock used to.
 const DEFAULT_ICON: &[u8] = include_bytes!("../icons/icon-preview.png");
 
-/// Label for the `None` entry. The other three are named for their artwork;
-/// this one is the app's own identity rather than a colourway, and it is the
+/// Label for the `None` entry. The other four are named for their colourway;
+/// this one is the app's own identity rather than a colour, and it is the
 /// tile Finder and the Dock fall back to, so it is named for that role.
 const DEFAULT_LABEL: &str = "Default";
 
@@ -161,8 +170,8 @@ mod tests {
     }
 
     #[test]
-    fn the_picker_offers_the_four_shipped_icons() {
-        // The blue bundle icon plus three alternates. An icon added to ICONS
+    fn the_picker_offers_the_five_shipped_icons() {
+        // The blue bundle icon plus four alternates. An icon added to ICONS
         // shows up in the picker with no other code change, so this is the
         // check that catches one arriving — or going missing because a source
         // was renamed without regenerate-icons.sh being re-run.
@@ -170,7 +179,7 @@ mod tests {
         // Order matters as much as membership — the bundle icon leads, and it
         // is the artwork the Dock falls back to once the process exits.
         let labels: Vec<String> = list().into_iter().map(|i| i.label).collect();
-        assert_eq!(labels, ["Default", "Gray", "Dark", "Mono"]);
+        assert_eq!(labels, ["Default", "Orange", "Green", "Purple", "Black"]);
     }
 
     #[test]

@@ -11,8 +11,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { AddMusicButton } from "@/components/AddMusicButton";
-import type { TrackGrouping, TrackSort } from "@/lib/types";
-import { GROUPING_LABELS, SORT_LABELS } from "@/lib/types";
+import type { TrackGrouping } from "@/lib/types";
+import { GROUPING_LABELS } from "@/lib/types";
 
 /** The row above the track list. Two states.
  *
@@ -38,8 +38,6 @@ export function LibraryHeaderRow({
   addDisabled,
   grouping,
   onGroupingChange,
-  sort,
-  onSortChange,
   onResetColumns,
 }: {
   searchValue: string;
@@ -50,8 +48,6 @@ export function LibraryHeaderRow({
   addDisabled: boolean;
   grouping: TrackGrouping;
   onGroupingChange: (grouping: TrackGrouping) => void;
-  sort: TrackSort;
-  onSortChange: (sort: TrackSort) => void;
   onResetColumns: () => void;
 }) {
   const selecting = selectedCount >= 2;
@@ -99,7 +95,7 @@ export function LibraryHeaderRow({
             <Button
               variant="ghost"
               size="sm"
-              title="Group the track list by artist, album or genre, and choose its sort order"
+              title="Group the track list by artist, album or genre. Sort it by clicking a column heading."
             >
               <LayoutGrid /> View
             </Button>
@@ -119,18 +115,12 @@ export function LibraryHeaderRow({
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>
-          <DropdownMenuSeparator />
-          <DropdownMenuRadioGroup
-            value={sort}
-            onValueChange={(v) => onSortChange(v as TrackSort)}
-          >
-            <DropdownMenuLabel>Sort By</DropdownMenuLabel>
-            {Object.entries(SORT_LABELS).map(([value, label]) => (
-              <DropdownMenuRadioItem key={value} value={value}>
-                {label}
-              </DropdownMenuRadioItem>
-            ))}
-          </DropdownMenuRadioGroup>
+          {/* No sort here. Sorting is the column headings' job — click one to
+              sort by it, click it again to reverse — and every order the list
+              can be in has a heading that asks for it, Recently Added included
+              (that is the Added column). A second way to set the same thing,
+              two menus deep, would only be a second place for it to look
+              wrong. */}
           <DropdownMenuSeparator />
           {/* The way back from a drag that squeezed a column to nothing —
               double-clicking a divider only restores the column it belongs

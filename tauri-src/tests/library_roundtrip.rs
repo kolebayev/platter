@@ -704,3 +704,64 @@ fn cached_artwork_is_dropped_when_the_generation_moves_on() {
     lib.art_cache_put(424242, 80, lib.art_generation(), "data:x".into());
     assert!(lib.art_cache_get(424242, 80).is_none());
 }
+
+#[test]
+fn removing_a_track_deletes_its_audio_but_only_after_the_write() {
+    let _guard = serialize();
+    let fixture = Fixture::new("removefile");
+    let mut lib = open(&fixture);
+    let a = fixture.audio("a.mp3");
+    let b = fixture.audio("b.mp3");
+    let doomed = import(
+        &lib,
+        &a,
+        Meta {
+            title: "Doomed",
+            artist: "A",
+            album: "X",
+            track_nr: 1,
+        },
+    );
+    import(
+        &lib,
+        &b,
+        Meta {
+            title: "Keeper",
+            artist: "A",
+            album: "X",
+            track_nr: 2,
+        },
+    );
+
+    // The device paths the import chose, before either record goes away.
+    let before = lib.snapshot().tracks;
+    let doomed_file = device_file(&fixture, &find(&before, "Doomed").ipod_path);
+    let keeper_file = device_file(&fixture, &find(&before, "Keeper").ipod_path);
+    assert!(doomed_file.exists(), "import should have copied the audio");
+
+    lib.queue_file_delete(&find(&before, "Doomed").id.clone());
+    assert_eq!(
+        unsafe { gpod::gpod_remove_track(lib.db().unwrap(), doomed) },
+        1
+    );
+
+    // Nothing is deleted yet: the database on the device still lists the
+    // track, and a crash here has to leave a playable library behind.
+    assert!(
+        doomed_file.exists(),
+        "the file must survive until the write that drops its record lands"
+    );
+
+    let tracks = save_and_reopen(&mut lib, &fixture);
+    assert_eq!(titles(&tracks), vec!["Keeper"]);
+    assert!(
+        !doomed_file.exists(),
+        "removing a track must take its audio with it, not leak it"
+    );
+    assert!(keeper_file.exists(), "the surviving track kept its audio");
+}
+
+/// The database's own colon-separated path, as a path under the fixture.
+fn device_file(fixture: &Fixture, ipod_path: &str) -> PathBuf {
+    Path::new(fixture.mount()).join(ipod_path.replace(':', "/").trim_start_matches('/'))
+}

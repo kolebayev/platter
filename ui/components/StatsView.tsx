@@ -126,13 +126,15 @@ function StatsBody({
   ];
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      {/* The covers are the B2C moment: a full-width seamless wall of what
-          the device actually played. Everything below stays quiet. */}
-      {covers.length >= 4 && <CoverWall ids={covers} />}
-
-      <div className="mx-auto flex max-w-3xl flex-col gap-9 px-6 pt-10 pb-6">
-        <div className="flex items-start justify-between gap-4">
+    // h-full, not flex-1: the tab's wrapper in App is a plain block, so there
+    // is no flex line here to take a share of — the pane has to claim the
+    // height it was given and scroll inside it. The inner scroller below is
+    // the one that gets flex-1, because this element is a flex line for it.
+    <div className="flex h-full flex-col">
+      {/* Header sits outside the scroller, so the title and Copy Snapshot stay
+          put while everything under them scrolls. */}
+      <div className="shrink-0 border-b bg-background">
+        <div className="mx-auto flex max-w-3xl items-start justify-between gap-4 px-6 py-4">
           <div className="flex min-w-0 flex-col gap-1.5">
             <h1 className="text-2xl font-semibold leading-snug text-balance">
               {formatListenTime(stats.listenMs)} of listening on this iPod
@@ -160,23 +162,31 @@ function StatsBody({
             )}
           </div>
         </div>
+      </div>
 
-        {/* One divided strip, Get-Info style — facts, not hero metrics. */}
-        <dl className="grid grid-cols-2 divide-border overflow-hidden rounded-lg border sm:grid-cols-4 sm:divide-x">
-          {facts.map(([label, value]) => (
-            <div key={label} className="flex flex-col gap-0.5 px-4 py-3">
-              <dt className="text-[11px] text-muted-foreground">{label}</dt>
-              <dd className="text-xl font-semibold tabular-nums">{value}</dd>
-            </div>
-          ))}
-        </dl>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {/* The covers are the B2C moment: a full-width seamless wall of what
+            the device actually played. Everything below stays quiet. */}
+        {covers.length >= 4 && <CoverWall ids={covers} />}
 
-        {/* Artists lead by time, not rank: the calendar shows when the
-            listening happened. topArtists stays computed for the share card. */}
-        {/* <ActivityHeatmap data={activity} /> */}
+        <div className="mx-auto flex max-w-3xl flex-col gap-9 px-6 pt-8 pb-6">
+          {/* One divided strip, Get-Info style — facts, not hero metrics. */}
+          <dl className="grid grid-cols-2 divide-border overflow-hidden rounded-lg border sm:grid-cols-4 sm:divide-x">
+            {facts.map(([label, value]) => (
+              <div key={label} className="flex flex-col gap-0.5 px-4 py-3">
+                <dt className="text-[11px] text-muted-foreground">{label}</dt>
+                <dd className="text-xl font-semibold tabular-nums">{value}</dd>
+              </div>
+            ))}
+          </dl>
 
-        <Treemap title="Top Albums" items={stats.topAlbums} />
-        <Ranking title="Top Tracks" items={stats.topTracks} showArt collapseAfter={10} />
+          {/* Artists lead by time, not rank: the calendar shows when the
+              listening happened. topArtists stays computed for the share card. */}
+          {/* <ActivityHeatmap data={activity} /> */}
+
+          <Treemap title="Top Albums" items={stats.topAlbums} />
+          <Ranking title="Top Tracks" items={stats.topTracks} showArt collapseAfter={10} />
+        </div>
       </div>
     </div>
   );

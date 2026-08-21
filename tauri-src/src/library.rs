@@ -128,6 +128,14 @@ pub struct Library {
     /// A background flush that fails silently is unsaved edits the user
     /// believes are on the device.
     notify_error: Option<ErrorNotifier>,
+    /// Device paths, in the database's own colon form, of tracks removed
+    /// since the last successful write. `itdb_track_free` drops the record
+    /// and nothing else, so without this the audio stayed on the device for
+    /// good — a 74 GB iPod had 2 GB of it. The files go **after** the write
+    /// succeeds, never before: deleting first and then failing to write
+    /// leaves the on-disk database pointing at audio that no longer exists,
+    /// which is a worse failure than the leak it replaces.
+    pending_deletes: Vec<String>,
 }
 
 /// The channel background failures are reported through.
@@ -164,6 +172,7 @@ pub fn new_unmanaged() -> Library {
         saves_since_backup: 0,
         flush_signal: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
         notify_error: None,
+        pending_deletes: Vec::new(),
     }
 }
 
@@ -243,6 +252,9 @@ impl Library {
         self.db = Some(db);
         self.mount_point = Some(mount_point.to_string());
         self.art_gen += 1;
+        // Anything still queued belonged to the library that just closed, and
+        // its paths mean something different under this mount point.
+        self.pending_deletes.clear();
         // Capture the connect-time state before anything can overwrite it.
         // Doing it here also makes the pair naturally consistent: nothing has
         // been written yet, so the two files still agree with each other.
@@ -253,7 +265,11 @@ impl Library {
     pub fn close(&mut self) {
         // Flush unsaved changes before dropping the handle — the auto-flush
         // thread can't run after close, and the user's edits must survive.
+        // This is also what gets queued deletions swept: a failed flush leaves
+        // them queued, and the clear below then keeps the files rather than
+        // deleting audio the database still lists.
         let _ = self.flush_if_dirty();
+        self.pending_deletes.clear();
         if let Some(db) = self.db.take() {
             unsafe { gpod_close(db) };
         }
@@ -385,7 +401,93 @@ impl Library {
             return Err(format!("Couldn't save changes to iPod: {msg}"));
         }
         self.dirty = false;
+        self.sweep_removed_files();
         Ok(())
+    }
+
+    /// Deletes the audio behind tracks removed since the last write, now that
+    /// the database on the device no longer mentions them.
+    ///
+    /// A path a surviving track still claims is left alone. Two records
+    /// pointing at one file is not something the app creates, but it is
+    /// something a database written by anything else can contain, and libgpod
+    /// does not check either — deleting on the first removal would silently
+    /// gut the second track.
+    fn sweep_removed_files(&mut self) {
+        if self.pending_deletes.is_empty() {
+            return;
+        }
+        let queued = std::mem::take(&mut self.pending_deletes);
+        let Some(mount) = self.mount_point.clone() else {
+            return;
+        };
+        let live = self.live_ipod_paths();
+        for path in queued {
+            if live.contains(&path) {
+                continue;
+            }
+            let full = device_file_path(&mount, &path);
+            if let Err(e) = std::fs::remove_file(&full) {
+                // Not worth failing the save over: the database is already
+                // written and correct, and what is left behind is a file
+                // nothing points at. Say so, so it isn't a silent leak.
+                log::warn!("couldn't delete {} from the iPod: {e}", full.display());
+            }
+        }
+    }
+
+    /// Every device path the open database still refers to. One list walk, and
+    /// only when a save actually had removals to sweep.
+    fn live_ipod_paths(&self) -> HashSet<String> {
+        let Some(db) = self.db else {
+            return HashSet::new();
+        };
+        let mut count: i32 = 0;
+        let array = unsafe { gpod_tracks_collect(db, &mut count) };
+        if array.is_null() || count <= 0 {
+            return HashSet::new();
+        }
+        let infos = unsafe { std::slice::from_raw_parts(array, count as usize) };
+        let paths = infos
+            .iter()
+            .filter_map(|info| {
+                (!info.ipod_path.is_null())
+                    .then(|| unsafe { std::ffi::CStr::from_ptr(info.ipod_path) })
+                    .map(|s| s.to_string_lossy().into_owned())
+            })
+            .collect();
+        unsafe { gpod_tracks_collect_free(array, count) };
+        paths
+    }
+
+    /// Queues the file behind a track for deletion at the next successful
+    /// save. Takes an id rather than a ref so the pointer is validated here,
+    /// and must be called while the record is still live — after
+    /// `gpod_remove_track` the pointer is freed and the path with it.
+    pub fn queue_file_delete(&mut self, id: &str) {
+        let Some(track) = self.resolve(id) else {
+            return;
+        };
+        let mut info = std::mem::MaybeUninit::<GpodTrackInfo>::uninit();
+        // SAFETY: resolve() vouched the pointer is live, and fill_info writes
+        // every field of the out-param.
+        let mut info = unsafe {
+            gpod_track_info_for(track, info.as_mut_ptr());
+            info.assume_init()
+        };
+        let path = if info.ipod_path.is_null() {
+            String::new()
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(info.ipod_path) }
+                .to_string_lossy()
+                .into_owned()
+        };
+        let transferred = info.transferred != 0;
+        unsafe { gpod_free_track_info(&mut info) };
+        // A record whose audio never reached the device has nothing to delete.
+        if transferred && !path.is_empty() {
+            self.pending_deletes.push(path);
+        }
     }
 
     /// Resolves a frontend id back to a track ref, refusing anything that
@@ -550,6 +652,14 @@ impl Library {
 
 /// One Track from one C-side info struct. Shared by the full reload and the
 /// per-edit patch so the two can never disagree about a field mapping.
+/// Turns the database's own path for a track — `:iPod_Control:Music:F04:ABCD.mp3`
+/// — into a path on this filesystem. The separator is a colon because the
+/// format predates the iPod: it is the classic Mac OS one, and the leading
+/// colon that would read as "relative" there is simply dropped here.
+fn device_file_path(mount: &str, ipod_path: &str) -> std::path::PathBuf {
+    std::path::Path::new(mount).join(ipod_path.replace(':', "/").trim_start_matches('/'))
+}
+
 fn track_from_info(info: &GpodTrackInfo) -> Track {
     let take = |p: *mut std::os::raw::c_char| -> String {
         if p.is_null() {
@@ -586,5 +696,30 @@ fn track_from_info(info: &GpodTrackInfo) -> Track {
         ipod_path: take(info.ipod_path),
         transferred: info.transferred == 1,
         has_drm: info.has_drm == 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_device_path_becomes_a_path_on_this_filesystem() {
+        assert_eq!(
+            device_file_path("/Volumes/POD", ":iPod_Control:Music:F04:ABCD.mp3"),
+            std::path::Path::new("/Volumes/POD/iPod_Control/Music/F04/ABCD.mp3")
+        );
+        // Without the leading colon, as some databases store it.
+        assert_eq!(
+            device_file_path("/Volumes/POD", "iPod_Control:Music:F04:ABCD.mp3"),
+            std::path::Path::new("/Volumes/POD/iPod_Control/Music/F04/ABCD.mp3")
+        );
+        // A mount point is not a path fragment to be escaped by an empty
+        // record: joining nothing must not hand back the volume root, which
+        // is what a delete would then be pointed at.
+        assert_eq!(
+            device_file_path("/Volumes/POD", ""),
+            std::path::Path::new("/Volumes/POD")
+        );
     }
 }

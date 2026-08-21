@@ -4,6 +4,7 @@ import {
   artworkFetchSize,
   cachedArtwork,
   getArtVersion,
+  markArtworkUndecodable,
   releaseArtwork,
   resolvedArtwork,
   retainArtwork,
@@ -77,6 +78,15 @@ export function ArtworkThumb({
           className,
         )}
         alt=""
+        // A cover the webview cannot decode would otherwise paint WebKit's
+        // broken-image icon — the macOS system question mark, which looks
+        // like a foreign asset dropped into the UI. Fall back to our own
+        // placeholder and tell the cache, so the other thumbs on this key
+        // never paint it either.
+        onError={() => {
+          if (trackId) markArtworkUndecodable(trackId, fetchSize);
+          setSrc(null);
+        }}
       />
     );
   }

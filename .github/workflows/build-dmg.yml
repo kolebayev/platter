@@ -22,6 +22,14 @@ on:
         description: How long the artifact is kept. Short for dev builds.
         type: number
         default: 14
+    secrets:
+      # Only a tagged release passes this. A CI build on main still produces
+      # the updater archive, unsigned — which the updater refuses, and which is
+      # the point: nothing that lands on a user's machine can come from a build
+      # nobody tagged.
+      TAURI_SIGNING_PRIVATE_KEY:
+        description: minisign private key that signs the updater archive.
+        required: false
     outputs:
       dmg-name:
         description: Basename of the built DMG.
@@ -163,7 +171,15 @@ jobs:
         # SIGN_IDENTITY is unset, so bundle-dylibs.sh signs ad-hoc: the DMG
         # runs anywhere, but macOS calls it "damaged" until the downloader
         # clears the quarantine flag. The release notes and the README both
-        # carry that line. Setting the secret here is what replaces it.
+        # carry that line. Setting a SIGN_IDENTITY here is what replaces it.
+        #
+        # The key below is a different key entirely, and confusing the two
+        # costs an afternoon: SIGN_IDENTITY is Apple's, and decides whether
+        # Gatekeeper opens the app at all. This one is minisign's, and decides
+        # only whether an already-installed copy accepts the archive as the
+        # next version. Neither substitutes for the other.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           npm ci
@@ -171,10 +187,21 @@ jobs:
           dmg=$(ls tauri-src/target/release/bundle/dmg/Platter_*.dmg | head -1)
           echo "dmg-name=$(basename "$dmg")" >> "$GITHUB_OUTPUT"
 
-      - name: Upload the DMG
+          # Staged flat into one directory before upload. upload-artifact roots
+          # a multi-path artifact at the common ancestor of its patterns, so
+          # naming the dmg/ and macos/ directories directly would bury the
+          # assets one level down and break every consumer's path.
+          mkdir -p staged
+          cp "$dmg" staged/
+          cp tauri-src/target/release/bundle/macos/Platter.app.tar.gz* staged/
+
+      # One artifact, not two: the DMG and the updater archive are the same
+      # build, and a release that shipped one from a different run than the
+      # other would hand users an update that isn't the download.
+      - name: Upload the DMG and the updater archive
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact-name }}
-          path: tauri-src/target/release/bundle/dmg/Platter_*.dmg
+          path: staged/
           retention-days: ${{ inputs.retention-days }}
           if-no-files-found: error

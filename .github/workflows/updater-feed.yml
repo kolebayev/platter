@@ -1,0 +1,73 @@
+# Writes latest.json — the feed tauri-plugin-updater polls — onto a release the
+# moment it is published.
+#
+# Not part of release.yml, and not a step in it, because of what it has to
+# carry: the release notes. Those are written by hand into the draft, after the
+# tag build has long finished, so a feed generated alongside the DMG could only
+# ever describe the build — never the change. The app would show the user a bare
+# link where a changelog belongs.
+#
+# Publishing is also the only moment this is safe. A draft's assets are not
+# publicly downloadable, so the archive this feed points at answers 404 until
+# the release goes live. Writing latest.json before that would advertise an
+# update that cannot be fetched.
+#
+# Between Publish and this workflow finishing, `/releases/latest/download/
+# latest.json` briefly 404s. That is the intended failure: `checkForUpdate` in
+# ui/lib/updates.ts swallows it and the app tries again next launch, which is
+# strictly better than serving a feed whose notes are a placeholder.
+name: Updater feed
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  feed:
+    # Hand-made releases and anything not cut from a v-tag have no signed
+    # archive to point at, and must not overwrite a good feed with a broken one.
+    if: startsWith(github.event.release.tag_name, 'v')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Write and attach latest.json
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+
+          # The signature travels as a release asset rather than being
+          # regenerated: this job has no signing key, and must not — the feed
+          # is assembled from what the tagged build already produced, so there
+          # is no second place a signature could come from.
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'Platter.app.tar.gz.sig' --dir . --clobber
+
+          # Everything above the marker release.yml plants in the body. `sed`
+          # rather than a multi-char awk RS, which only some awks treat as a
+          # regex; the command substitution around it drops the trailing
+          # newlines for free. An empty result is fine and means "no notes" —
+          # UpdateBadge hides the block rather than showing an empty box.
+          notes="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body -q .body \
+            | sed '/<!-- update-notes-end -->/,$d')"
+
+          jq -n \
+            --arg version "$version" \
+            --arg pub_date "${{ github.event.release.published_at }}" \
+            --arg notes "$notes" \
+            --arg signature "$(cat Platter.app.tar.gz.sig)" \
+            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/Platter.app.tar.gz" \
+            '{version: $version, notes: $notes, pub_date: $pub_date,
+              platforms: {"darwin-aarch64": {signature: $signature, url: $url}}}' \
+            > latest.json
+
+          # --clobber so re-publishing a release, or editing its notes and
+          # re-running this job, replaces the feed instead of failing on a name
+          # that is already taken.
+          gh release upload "$TAG" latest.json --repo "$GITHUB_REPOSITORY" --clobber
+
+          echo "::notice::latest.json published for $TAG ($(wc -c < latest.json) bytes)"

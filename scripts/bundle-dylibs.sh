@@ -2,8 +2,8 @@
 # Makes the built .app self-contained: copies libgpod and its GLib dependency
 # chain (from ~/.local and Homebrew) into Contents/Frameworks and rewrites the
 # install names, so the app runs on Macs without those libraries. Then
-# re-signs and repacks the DMG, since the one tauri build produced contains
-# the un-patched app.
+# re-signs, repacks the DMG and packs the updater archive, since the ones tauri
+# build produced contain the un-patched app.
 #
 # Run after `npm run tauri build`:
 #   ./scripts/bundle-dylibs.sh
@@ -188,9 +188,35 @@ cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 hdiutil create -volname Platter -srcfolder "$STAGE" -ov -format UDZO "$DMG" > /dev/null
 
+echo "==> Packing the updater archive"
+# tauri-plugin-updater downloads a tarball of the .app, not the DMG, and
+# verifies it against the minisign public key in tauri.conf.json. The archive
+# is built HERE rather than by tauri's own `createUpdaterArtifacts`, which runs
+# inside `tauri build` — before this script has copied a single dylib. That
+# archive would carry the app that still links ~/.local and /opt/homebrew: it
+# installs cleanly, then dies in dyld on the user's machine, and the user has
+# no un-update. Same reason the DMG is repacked above.
+#
+# Signing is skipped when no key is present, so a local `npm run bundle` stays
+# a one-command build. A release passes TAURI_SIGNING_PRIVATE_KEY.
+TARBALL="$BUNDLE/macos/Platter.app.tar.gz"
+rm -f "$TARBALL" "$TARBALL.sig"
+tar czf "$TARBALL" -C "$(dirname "$APP")" "$(basename "$APP")"
+if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+  # Explicitly empty rather than unset: with no password variable at all the
+  # CLI prompts on a TTY and blocks forever on a runner.
+  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
+  (cd "$ROOT" && npm run --silent tauri -- signer sign "$TARBALL" > /dev/null)
+  [ -f "$TARBALL.sig" ] || { echo "error: signer produced no $TARBALL.sig" >&2; exit 1; }
+else
+  echo "    note: TAURI_SIGNING_PRIVATE_KEY unset — archive built but not signed."
+  echo "          An unsigned archive is inert; the updater refuses it."
+fi
+
 echo "==> Done"
 echo "    app: $APP"
 echo "    dmg: $DMG"
+echo "    updater: $TARBALL$([ -f "$TARBALL.sig" ] && echo " (+ .sig)")"
 if [ "$SIGN_IDENTITY" = "-" ]; then
   echo "    NOTE: ad-hoc signed. Downloaders will see Gatekeeper's 'damaged' dialog;"
   echo "          they must run: xattr -dr com.apple.quarantine /Applications/Platter.app"

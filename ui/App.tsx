@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { AppVersion } from "@/components/AppVersion";
+import { UpdateBadge } from "@/components/UpdateBadge";
 import { BulkEditPanel } from "@/components/BulkEditPanel";
 import { CapacityGauge } from "@/components/CapacityGauge";
 import { ImportDialog } from "@/components/ImportDialog";
@@ -65,8 +66,10 @@ import type {
   Progress,
   Track,
   TrackGrouping,
-  TrackSort,
+  TrackSortState,
 } from "@/lib/types";
+import { SIDE_PANEL_MAX_WIDTH, SIDE_PANEL_WIDTH } from "@/lib/layout";
+import { readSortPrefs, writeSortPrefs, type SortPrefs } from "@/lib/sort";
 
 // Split out of the entry chunk: neither tab is the default view, and together
 // they are the bulk of the UI code. Loading them on first visit also keeps
@@ -102,8 +105,14 @@ export default function App() {
   const [grouping, setGrouping] = useState<TrackGrouping>(
     () => (localStorage.getItem("trackGrouping") as TrackGrouping) || "artist",
   );
-  const [sort, setSort] = useState<TrackSort>(
-    () => (localStorage.getItem("trackSort") as TrackSort) || "albumOrder",
+  /** One sort per grouping, not one for the list. Flat view opens on artist
+   * A–Z and the grouped views on album order, and switching between them must
+   * not rewrite the order of the one being left; see lib/sort.ts. */
+  const [sortPrefs, setSortPrefs] = useState<SortPrefs>(readSortPrefs);
+  const sort = sortPrefs[grouping];
+  const setSort = useCallback(
+    (next: TrackSortState) => setSortPrefs((prefs) => ({ ...prefs, [grouping]: next })),
+    [grouping],
   );
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [collapsedAlbums, setCollapsedAlbums] = useState<Set<string>>(new Set());
@@ -112,7 +121,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showDrivePicker, setShowDrivePicker] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
-  const [detailWidth, setDetailWidth] = useState(440);
+  const [detailWidth, setDetailWidth] = useState(SIDE_PANEL_WIDTH);
   const [view, setView] = useState<AppView>(() => {
     const stored = localStorage.getItem("appView");
     // A stale value from an older build must not blank the window.
@@ -130,6 +139,11 @@ export default function App() {
   useEffect(() => {
     if (view === "convert") setConvertMounted(true);
   }, [view]);
+  /** Paths dropped on the window while Convert is the visible tab, handed to
+   * that tab to stage. Cleared as soon as it has taken them, so the next drop
+   * of the same files is still a new value. */
+  const [convertDrop, setConvertDrop] = useState<string[] | null>(null);
+  const takeConvertDrop = useCallback(() => setConvertDrop(null), []);
   const detailRef = useRef<HTMLDivElement>(null);
 
   // First-run TCC primer: shown once. Declining raises the quiet banner
@@ -159,6 +173,11 @@ export default function App() {
   const isOpenRef = useRef(isOpen);
   isOpenRef.current = isOpen;
 
+  // Read by the drag-drop handler, which routes by tab and must not
+  // re-subscribe every time the tab changes.
+  const viewRef = useRef(view);
+  viewRef.current = view;
+
   // Logged from the persistence effects rather than the handlers: menu,
   // keyboard shortcut and restore-at-launch all land here, so one line each
   // covers every way the setting can move. The mount run records the state the
@@ -168,9 +187,9 @@ export default function App() {
     log.info("library.grouping", grouping);
   }, [grouping]);
   useEffect(() => {
-    localStorage.setItem("trackSort", sort);
-    log.info("library.sort", sort);
-  }, [sort]);
+    writeSortPrefs(sortPrefs);
+    log.info("library.sort", `${grouping}: ${sort.key} ${sort.dir}`);
+  }, [sortPrefs, grouping, sort]);
   useEffect(() => {
     localStorage.setItem("appView", view);
     log.info("view.change", view);
@@ -345,21 +364,29 @@ export default function App() {
         setIsDropTarget(true);
       } else if (kind === "drop") {
         setIsDropTarget(false);
+        const paths = event.payload.paths;
+        if (paths.length === 0) return;
+        // A few real paths, not just a count: an import that fails on one file
+        // in a folder is unreproducible without knowing what was dropped.
+        const dropped = `${paths.length} — ${paths.slice(0, 3).join(", ")}${
+          paths.length > 3 ? " …" : ""
+        }`;
+        // On Convert a drop only fills the queue. Format, bitrate and
+        // destination are all still the user's to set when the files land, so
+        // the gesture that imports on Library stages here and stops — nothing
+        // is converted until Convert Files is pressed.
+        if (viewRef.current === "convert") {
+          log.info("drop.staged", dropped);
+          setConvertDrop(paths);
+          return;
+        }
         if (!isOpenRef.current) {
           log.warn("drop.rejected", "no iPod connected");
           setLastError("Connect an iPod before adding songs.");
           return;
         }
-        const paths = event.payload.paths;
-        // A few real paths, not just a count: an import that fails on one file
-        // in a folder is unreproducible without knowing what was dropped.
-        log.info(
-          "drop.files",
-          `${paths.length} — ${paths.slice(0, 3).join(", ")}${paths.length > 3 ? " …" : ""}`,
-        );
-        if (paths.length > 0) {
-          run(api.importFiles(paths)).then(handleImportResult);
-        }
+        log.info("drop.files", dropped);
+        run(api.importFiles(paths)).then(handleImportResult);
       } else {
         setIsDropTarget(false);
       }
@@ -580,10 +607,14 @@ export default function App() {
     const startWidth = detailRef.current?.offsetWidth ?? detailWidth;
     let latest = startWidth;
     const onMove = (ev: MouseEvent) => {
-      // Floor matches Convert's fixed 320: that panel carries a form of the
-      // same shape at that width, so it is demonstrably usable, and anything
-      // wider would stop the two tabs being made to line up.
-      latest = Math.min(720, Math.max(320, startWidth + (startX - ev.clientX)));
+      // The floor is the width both tabs start at — see lib/layout.ts. Below
+      // it the two panes would stop lining up at their narrowest, and that
+      // panel is demonstrably usable there: Convert carries a form of the same
+      // shape at exactly this width.
+      latest = Math.min(
+        SIDE_PANEL_MAX_WIDTH,
+        Math.max(SIDE_PANEL_WIDTH, startWidth + (startX - ev.clientX)),
+      );
       if (detailRef.current) detailRef.current.style.width = `${latest}px`;
     };
     const onUp = () => {
@@ -653,6 +684,7 @@ export default function App() {
         <ViewTabs view={view} onChange={setView} convertProgress={convertProgress} />
 
         <div className="flex items-center justify-end gap-1">
+          <UpdateBadge />
           <AppVersion />
           <Button
             variant="ghost"
@@ -761,7 +793,9 @@ export default function App() {
                   }
                   onSetArtwork={(path) => {
                     const ids = selectedTracks.map((t) => t.id);
-                    run(api.setArtwork(ids, path)).then((p) => {
+                    // Returned so the panel's Apply can await it and keep the
+                    // button in its "Applying…" state until the art lands.
+                    return run(api.setArtwork(ids, path)).then((p) => {
                       if (p) {
                         invalidateArtwork(ids);
                         applyPatch(p);
@@ -807,6 +841,9 @@ export default function App() {
                 ipodMount={snapshot.mountPoint}
                 onLibraryChanged={reloadLibrary}
                 onProgressChange={setConvertProgress}
+                droppedPaths={convertDrop}
+                onDropStaged={takeConvertDrop}
+                isDropTarget={isDropTarget}
               />
             </Suspense>
           </div>
