@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Rebuild the whole app icon set from the four source renders in
+# Rebuild the whole app icon set from the five source renders in
 # tauri-src/icons/sources/.
 #
 # default.png is the app's real icon: it becomes icon.icns and every sized PNG,
 # so Finder, Launchpad and Spotlight show it too — and so does the Dock once the
-# process is gone. gray.png, dark.png and mono.png ship as alternates in
-# icons/alt/ and are only ever applied to the Dock of a running app — see
-# tauri-src/src/app_icon.rs for why macOS allows nothing more than that.
+# process is gone. orange.png, green.png, purple.png and black.png ship as
+# alternates in icons/alt/ and are only ever applied to the Dock of a running
+# app — see tauri-src/src/app_icon.rs for why macOS allows nothing more than
+# that.
 #
 # Adding or removing a source here means editing the ICONS manifest in
 # app_icon.rs to match; its tests assert the exact set the picker offers.
@@ -21,7 +22,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 # The alternates, in the order the picker lists them. `default` is handled
 # separately: it is the bundle icon, not an alternate.
-ALTS=(gray dark mono)
+ALTS=(orange green purple black)
 
 # How much of the canvas the artwork occupies in the *inset* renders. Apple's
 # macOS app-icon grid puts an 824px body on a 1024px canvas, so 824/1024.
