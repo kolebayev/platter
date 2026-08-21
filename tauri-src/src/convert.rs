@@ -1156,6 +1156,10 @@ fn muxer_args(format: TargetFormat) -> Vec<String> {
 /// also silence the warnings that do mean something.
 fn is_self_inflicted_noise(line: &str) -> bool {
     line.contains("extension is not .m4a nor .m4v")
+        // swscale says this about the cover art whenever we normalize one —
+        // it is a remark about the JPEG we chose to re-encode, fires on every
+        // track of an album with art, and names nothing the user can act on.
+        || line.contains("deprecated pixel format used")
 }
 
 fn run_ffmpeg(
@@ -1329,10 +1333,17 @@ fn convert_one(
     };
 
     let tmp = dst.with_extension(format!("{}.part", target.format.ext()));
-    let display = dst
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    // The name the rest of the log already uses for this track — `WorkItem::
+    // display`: the source file, except for a cue slice, which has no file of
+    // its own and is known by what it is being written as. ffmpeg's lines used
+    // to carry the destination instead, so one track appeared in the log under
+    // two names, once as .flac and once as .m4a.
+    let display = match cue {
+        Some(_) => dst.file_stem(),
+        None => src.file_name(),
+    }
+    .map(|n| n.to_string_lossy().into_owned())
+    .unwrap_or_default();
     // A cue slice's span, not the whole album image — otherwise the per-file
     // bar for track 1 of 12 would creep to 8% and stop.
     let effective_duration = match cue {
@@ -1546,6 +1557,33 @@ fn prepare_one(
     obs: &dyn ConvertObserver,
     index: usize,
 ) -> Prepared {
+    let outcome = prepare_one_uncounted(
+        item, out_dir, layout, names, art_cache, target, control, obs, index,
+    );
+    // Reading the result back covers the passthrough branches too, which
+    // produce a "converted" file nothing in this function ever encoded.
+    if let (Prepared::Ready(path), true) = (&outcome, obs.wants_stats()) {
+        if let Some(tools) = tools() {
+            if let Some(probe) = probe_media(&tools.ffprobe, path) {
+                obs.item_stats(index, &OutputStats::from_probe(&probe, path));
+            }
+        }
+    }
+    outcome
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_one_uncounted(
+    item: &WorkItem,
+    out_dir: &Path,
+    layout: OutLayout,
+    names: &NameReserver,
+    art_cache: &ArtCache,
+    target: &TargetSpec,
+    control: &ConvertControl,
+    obs: &dyn ConvertObserver,
+    index: usize,
+) -> Prepared {
     let to_alac = target.format == TargetFormat::Alac;
 
     if to_alac && item.cue.is_none() && is_direct_ext(&item.src) {
@@ -1718,8 +1756,114 @@ fn decoded_peak_db(ffmpeg: &Path, path: &Path) -> Option<f64> {
 /// Everything a caller can learn while a batch runs. The old callback fired
 /// only when an item finished, which left the bar frozen for the length of one
 /// ten-minute DSD file.
+/// Decimal units, matching `formatBytes` in the UI — a log line reading 27.3 MB
+/// beside a footer reading 28.6 MB for the same bytes is its own bug report.
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1000 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    let mut unit = "B";
+    for u in ["KB", "MB", "GB", "TB"] {
+        value /= 1000.0;
+        unit = u;
+        if value < 1000.0 {
+            break;
+        }
+    }
+    let digits = if value < 10.0 {
+        2
+    } else if value < 100.0 {
+        1
+    } else {
+        0
+    };
+    format!("{value:.digits$} {unit}")
+}
+
+/// What one finished file actually turned out to be, read back from the output
+/// instead of derived from the request. A passthrough that skipped the encode,
+/// an encoder that clamped a rate, or a VBR pass that landed nowhere near its
+/// nominal bitrate would all be reported as whatever was asked for otherwise.
+#[derive(Clone, Debug)]
+pub struct OutputStats {
+    /// Upper-cased for display: ALAC, MP3, AAC, FLAC, PCM.
+    pub codec: String,
+    pub sample_rate: u32,
+    pub channels: u32,
+    /// None for lossy output, where bit depth belongs to the decoder rather
+    /// than to the file.
+    pub bits: Option<u32>,
+    pub bytes: u64,
+    /// Averaged over the whole file. Exact, unlike a nominal encoder setting.
+    pub kbps: u32,
+}
+
+impl OutputStats {
+    /// "ALAC 16-bit 44.1 kHz stereo · 27.3 MB · 916 kbps" — what the file is,
+    /// then how big it came out, which is the order someone reads it in.
+    pub fn summary(&self) -> String {
+        let mut out = self.codec.clone();
+        if let Some(bits) = self.bits {
+            out.push_str(&format!(" {bits}-bit"));
+        }
+        if self.sample_rate > 0 {
+            let khz = self.sample_rate as f64 / 1000.0;
+            // 44.1 and 88.2 need the decimal; on 48 and 96 it is noise.
+            if (khz - khz.round()).abs() < 0.05 {
+                out.push_str(&format!(" {khz:.0} kHz"));
+            } else {
+                out.push_str(&format!(" {khz:.1} kHz"));
+            }
+        }
+        match self.channels {
+            0 => {}
+            1 => out.push_str(" mono"),
+            2 => out.push_str(" stereo"),
+            n => out.push_str(&format!(" {n} ch")),
+        }
+        out.push_str(&format!(" · {}", format_bytes(self.bytes)));
+        if self.kbps > 0 {
+            out.push_str(&format!(" · {} kbps", self.kbps));
+        }
+        out
+    }
+
+    fn from_probe(probe: &MediaProbe, path: &Path) -> OutputStats {
+        let bytes = match probe.file_bytes {
+            0 => std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+            n => n,
+        };
+        let bps = match probe.bit_rate {
+            0 if probe.duration_s > 0.0 => (bytes as f64 * 8.0 / probe.duration_s) as u64,
+            n => n,
+        };
+        let codec = match probe.codec.strip_prefix("pcm_") {
+            Some(_) => "PCM".to_string(),
+            None => probe.codec.to_uppercase(),
+        };
+        OutputStats {
+            codec,
+            sample_rate: probe.sample_rate,
+            channels: probe.channels,
+            bits: probe.is_lossless().then_some(probe.bits),
+            bytes,
+            kbps: (bps / 1000) as u32,
+        }
+    }
+}
+
 pub trait ConvertObserver: Sync {
     fn started(&self, _index: usize, _name: &str) {}
+    /// Whether to read each finished file back. The probe costs one ffprobe
+    /// spawn per item, which is worth it for the Convert tab's log and pure
+    /// waste for the drag-and-drop import, whose observer only counts files.
+    fn wants_stats(&self) -> bool {
+        false
+    }
+    /// What the finished file turned out to be. Emitted before `item_done`,
+    /// and only for items that produced one.
+    fn item_stats(&self, _index: usize, _stats: &OutputStats) {}
     /// 0..1 within the current file. Never called for stream-copy items or
     /// sources whose duration is unknown — there is no denominator.
     fn file_progress(&self, _index: usize, _fraction: f64) {}
@@ -1865,13 +2009,11 @@ pub fn prepare_batch_into(
     let art_cache = ArtCache::new(&art_dir);
     let names = NameReserver::new(out_dir);
 
-    // Half the cores: ffmpeg's ALAC path is single-threaded but the decode +
-    // resample chain still saturates a core; leave headroom for the UI.
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get() / 2)
-        .unwrap_or(4)
-        .clamp(2, 8)
-        .min(items.len());
+    // Two, whatever the machine has. Half the cores left the UI responsive but
+    // not the audio: eight decode+resample chains starve CoreAudio's render
+    // thread, and music playing while a batch runs stutters. Two still halves
+    // the wall clock against a plain queue, which is where most of the win was.
+    let workers = 2.min(items.len());
 
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
@@ -2161,6 +2303,57 @@ mod tests {
         // The literal ffmpeg emits, with the muxer tag it carries.
         assert!(is_self_inflicted_noise(
             "[ipod @ 0xb42c28280] Warning, extension is not .m4a nor .m4v Quicktime/Ipod might not play the file"
+        ));
+    }
+
+    fn stats(codec: &str, rate: u32, ch: u32, bits: Option<u32>, bytes: u64, kbps: u32) -> OutputStats {
+        OutputStats {
+            codec: codec.into(),
+            sample_rate: rate,
+            channels: ch,
+            bits,
+            bytes,
+            kbps,
+        }
+    }
+
+    #[test]
+    fn a_lossless_output_is_described_with_its_depth_and_rate() {
+        assert_eq!(
+            stats("ALAC", 44100, 2, Some(16), 27_300_000, 916).summary(),
+            "ALAC 16-bit 44.1 kHz stereo · 27.3 MB · 916 kbps"
+        );
+        // 48 and 96 kHz read as noise with a trailing .0.
+        assert_eq!(
+            stats("FLAC", 48000, 1, Some(24), 9_540_000, 1411).summary(),
+            "FLAC 24-bit 48 kHz mono · 9.54 MB · 1411 kbps"
+        );
+    }
+
+    #[test]
+    fn a_lossy_output_claims_no_bit_depth() {
+        // Bit depth for MP3/AAC is a property of whatever decodes it, so the
+        // probe's inferred value must not be presented as a fact about the file.
+        assert_eq!(
+            stats("MP3", 44100, 2, None, 9_500_000, 192).summary(),
+            "MP3 44.1 kHz stereo · 9.50 MB · 192 kbps"
+        );
+    }
+
+    #[test]
+    fn an_unknown_bitrate_is_left_out_rather_than_printed_as_zero() {
+        assert_eq!(
+            stats("PCM", 44100, 2, Some(16), 1000, 0).summary(),
+            "PCM 16-bit 44.1 kHz stereo · 1.00 KB"
+        );
+    }
+
+    #[test]
+    fn the_cover_art_scalers_pixel_format_warning_is_dropped() {
+        // The literal swscale emits while normalizing a cover, once per track
+        // of an album that has one.
+        assert!(is_self_inflicted_noise(
+            "[swscaler @ 0x7e2bf0000] deprecated pixel format used, make sure you did set range correctly"
         ));
     }
 
