@@ -125,12 +125,25 @@ a hand-written C bridge. macOS only.
   rather than a literal.
 - `otool -L` prints the file's own path as its first line. Filtering its output
   for build-machine paths without `tail -n +2` makes the check match itself.
-- Every icon in `tauri-src/icons/` is **generated**. The two sources live in
-  `icons/sources/`; `./scripts/regenerate-icons.sh` rebuilds the whole set.
+- Every icon in `tauri-src/icons/` is **generated**. The five sources live in
+  `tauri-src/icons/sources/` (`default.png` = the blue bundle icon, plus the
+  `orange`/`green`/`purple`/`black` Dock alternates);
+  `./scripts/regenerate-icons.sh` rebuilds the whole set. Adding or dropping
+  one means editing `ALTS` in that script *and* the `ICONS` manifest in
+  `app_icon.rs` — `app_icon::tests::the_picker_offers_the_five_shipped_icons`
+  asserts the exact set.
   `npm run tauri -- icon` also emits `ios/` and `android/` unconditionally —
   the script deletes them, this app is macOS only. The icns encoder is not
   byte-reproducible, so `icon.icns` shows up modified after every run even when
   the pixels are identical.
+- **Never edit `tauri-src/icons/icon_template.icon/` by hand.** It is an Icon
+  Composer document (`icon.json` + `Assets/*.svg`) authored in the GUI, and
+  nothing in the build reads it — hand edits to the JSON or the SVGs desync it
+  from what Icon Composer writes back and get clobbered on the next save. It is
+  the artwork master: change the icon there, export 1024x1024 full-bleed PNGs
+  into `tauri-src/icons/sources/`, then run `./scripts/regenerate-icons.sh`.
+  (Separately, `tauri build` derives its own Icon Composer asset from
+  `icon.png`; the script deliberately leaves that alone.)
 - The dylibs on **this machine** (libgpod at `~/.local`, Homebrew GLib chain,
   Homebrew ffmpeg) carry `LC_BUILD_VERSION minos 26.0` — built without
   `MACOSX_DEPLOYMENT_TARGET`. `bundle-dylibs.sh` fails a bundle whose Mach-Os

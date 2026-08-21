@@ -4,7 +4,7 @@
 
   <h1>Platter</h1>
 
-  <p><b>iPod without iTunes — a native macOS app that manages your library.</b></p>
+  <p><b>iPod without iTunes — a native macOS app that manages your library and doesn't look 20 years old.</b></p>
 
 <p>
   <img src="https://img.shields.io/badge/macOS-14%2B-black?style=flat&logo=apple&logoColor=white" alt="macOS 14+" />
@@ -37,11 +37,11 @@
 
 ### Your music, the way you left it
 
-- Plug the iPod in and everything on it shows up — grouped by artist, album or
+- Plug the iPod in and music on it shows up — grouped by artist, album or
   genre, cover art and all
-- Search as you type
+- Search the whole lib
 - Scrolls smoothly whether you have 80 tracks or 80,000
-- See how much space is free before and after you add anything
+- See free remaining space
 
 ### Fix the messy tags
 
@@ -62,8 +62,7 @@
 
 ### Convert on its own
 
-- A converter you can use by itself — put the result on the iPod or in a
-  folder, see the size before you commit, watch it work
+- A converter you can use by itself — put the result on the iPod or on your machine, see the size before you commit, watch it work
 
 ### See what you actually listened to
 
@@ -71,11 +70,23 @@
   counts
 - A heatmap of your listening year, and a share card you can copy as an image
 
-### Make it yours
+### Personalization
 
 - Light, dark or match the system
-- Pick a different Dock icon
 - ⌘1 / ⌘2 / ⌘3 switch tabs, ⌘, opens Settings
+- Pick a different Dock icon — the blue default plus four colourways. The swap
+  is the running app's Dock tile only: macOS has no alternate-icon API for the
+  rest, so Finder and Spotlight keep showing the default.
+
+<div align="center">
+  <img src="tauri-src/icons/icon-preview.png" width="76" alt="Default (blue) app icon" />
+  <img src="tauri-src/icons/alt/orange.png" width="76" alt="Orange app icon" />
+  <img src="tauri-src/icons/alt/green.png" width="76" alt="Green app icon" />
+  <img src="tauri-src/icons/alt/purple.png" width="76" alt="Purple app icon" />
+  <img src="tauri-src/icons/alt/black.png" width="76" alt="Black app icon" />
+  <br/>
+  <sub><b>Default</b> · Orange · Green · Purple · Black</sub>
+</div>
 
 ## Installation
 
@@ -92,12 +103,13 @@ same recipe, downloadable with a GitHub account. Or
 2. Run this once in Terminal:
 
    ```sh
-   xattr -dr com.apple.quarantine /Applications/Platter.app
+   sudo xattr -dr com.apple.quarantine /Applications/Platter.app
    ```
 
    Builds are ad-hoc signed rather than notarized, so without this macOS
    refuses to open the app — "Apple could not verify Platter is free of
-   malware". The command clears the download flag; you only need it once.
+   malware". The command clears the download flag; it asks for your password
+   and you only need it once.
 
 3. Open Platter and connect your iPod
 

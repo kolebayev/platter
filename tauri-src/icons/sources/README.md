@@ -1,8 +1,8 @@
 # Icon sources
 
-The four renders every other icon in the repo is derived from. Everything in
+The five renders every other icon in the repo is derived from. Everything in
 `../` (`icon.icns`, `icon.png`, `icon-preview.png`, `32x32.png`, `128x128.png`,
-`128x128@2x.png`) and everything in `../alt/` is generated — edit these four and
+`128x128@2x.png`) and everything in `../alt/` is generated — edit these five and
 re-run `scripts/regenerate-icons.sh` from the repo root, never the outputs.
 
 `tauri icon` also emits iOS, Android and Windows sets. This app is macOS only,
@@ -10,10 +10,11 @@ so the script deletes them; that list is the whole macOS set.
 
 | file          | role                                                           |
 | ------------- | -------------------------------------------------------------- |
-| `default.png` | The app's real icon. Becomes `icon.icns` and every sized PNG.   |
-| `gray.png`    | Alternate. Applied to the Dock at runtime only.                 |
-| `dark.png`    | Alternate. Applied to the Dock at runtime only.                 |
-| `mono.png`    | Alternate. Applied to the Dock at runtime only.                 |
+| `default.png` | The app's real icon (blue). Becomes `icon.icns` and every sized PNG. |
+| `orange.png`  | Alternate. Applied to the Dock at runtime only.                 |
+| `green.png`   | Alternate. Applied to the Dock at runtime only.                 |
+| `purple.png`  | Alternate. Applied to the Dock at runtime only.                 |
+| `black.png`   | Alternate. Applied to the Dock at runtime only.                 |
 
 `default.png` is the bundle icon, so it is what Finder, Launchpad and Spotlight
 show, and what the Dock falls back to once the process exits. The picker's
@@ -31,7 +32,7 @@ full reasoning.
 2. Add its name to `ALTS` in `scripts/regenerate-icons.sh` and re-run it.
 3. Add one line to `ICONS` in `../../src/app_icon.rs`.
 
-`app_icon::tests::the_picker_offers_the_four_shipped_icons` will fail until you
+`app_icon::tests::the_picker_offers_the_five_shipped_icons` will fail until you
 update it — that's deliberate, since a new entry appears in the picker with no
 other code change.
 
@@ -65,7 +66,7 @@ consumers want two different things from that:
 
 `regenerate-icons.sh` therefore emits both, and the `ICON_GRID` variable at the
 top of it is the 824/1024 fraction. `icon-preview.png` is the inset copy of the
-default artwork; it exists only so the picker's "Default" tile matches the three
+default artwork; it exists only so the picker's "Default" tile matches the four
 alternates beside it, and is never applied as an image.
 
 ## Known limitations

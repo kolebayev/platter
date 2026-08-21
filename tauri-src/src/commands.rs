@@ -359,7 +359,7 @@ pub async fn request_volume_access(app: AppHandle) -> Result<AccessRequest, Stri
     .await
 }
 
-/// The app-icon trio skips the `blocking()` pool: a base64 encode of four
+/// The app-icon trio skips the `blocking()` pool: a base64 encode of five
 /// small PNGs, a sub-kilobyte file write and a hop to the main thread are all
 /// bounded work that never touches libgpod or the library mutex.
 #[tauri::command]
