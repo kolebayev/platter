@@ -44,6 +44,12 @@ function summarize(values: string[]): string {
   return `${unique.length} values`;
 }
 
+/** Last path component — the picked cover is confirmed by its file name,
+ * since a local file can't be previewed without the asset protocol. */
+function basename(path: string): string {
+  return path.split("/").pop() || path;
+}
+
 /** Label per field, in the order the panel renders them. */
 const FIELD_LABELS: Record<BulkField, string> = {
   artist: "Artist",
@@ -54,8 +60,9 @@ const FIELD_LABELS: Record<BulkField, string> = {
 };
 
 /** Shown when more than one track is selected. Drafts prefill only when the
- * selection already agrees; one Apply at the end stamps JUST the fields the
- * user touched — never an untouched field across a mixed selection. */
+ * selection already agrees; one Apply at the end stamps JUST what the user
+ * touched — fields and cover art alike — never an untouched field across a
+ * mixed selection. */
 export function BulkEditPanel({
   tracks,
   busy,
@@ -68,7 +75,7 @@ export function BulkEditPanel({
   /** Every changed field lands in ONE backend call — one lock take, one
    * IPC round-trip, one patch — instead of a call per field. */
   onSetFields: (fields: [BulkField, string][]) => Promise<unknown> | void;
-  onSetArtwork: (imagePath: string) => void;
+  onSetArtwork: (imagePath: string) => Promise<unknown> | void;
   onRemove: () => void;
 }) {
   const [initial] = useState<Record<BulkField, string>>({
@@ -79,6 +86,9 @@ export function BulkEditPanel({
     genre: shared(tracks.map((t) => t.genre)) ?? "",
   });
   const [draft, setDraft] = useState(initial);
+  // A picked cover is a draft like any other field: it waits for Apply, so
+  // one confirmation covers the whole edit and a mis-click costs nothing.
+  const [pendingArt, setPendingArt] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
 
   // A field applies when it was changed away from its starting value — a
@@ -87,10 +97,24 @@ export function BulkEditPanel({
     (k) => draft[k] !== initial[k] && draft[k] !== "",
   );
 
+  // What Apply will stamp, in button-label order.
+  const pending = [
+    ...changed.map((k) => FIELD_LABELS[k]),
+    ...(pendingArt ? ["Cover Art"] : []),
+  ];
+
   async function apply() {
-    if (changed.length === 0 || busy || applying) return;
+    if (pending.length === 0 || busy || applying) return;
     setApplying(true);
-    await onSetFields(changed.map((field) => [field, draft[field]]));
+    if (changed.length > 0) {
+      await onSetFields(changed.map((field) => [field, draft[field]]));
+    }
+    // Artwork is its own backend call — the fields patch and the artwork
+    // patch are separate, so they land one after the other, not together.
+    if (pendingArt) {
+      await onSetArtwork(pendingArt);
+      setPendingArt(null);
+    }
     setApplying(false);
   }
 
@@ -122,7 +146,7 @@ export function BulkEditPanel({
       multiple: false,
       filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg"] }],
     });
-    if (typeof file === "string") onSetArtwork(file);
+    if (typeof file === "string") setPendingArt(file);
   }
 
   return (
@@ -186,23 +210,48 @@ export function BulkEditPanel({
             missingCount={tracks.length - artworkCount}
             className="rounded-md"
           />
-          <div className="flex flex-col items-start gap-1">
-            <Button
-              variant="outline"
-              size="sm"
-              type="button"
-              disabled={busy}
-              onClick={pickArtwork}
-            >
-              Choose Cover Art…
-            </Button>
+          <div className="flex min-w-0 flex-col items-start gap-1">
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                type="button"
+                disabled={busy}
+                onClick={pickArtwork}
+              >
+                {pendingArt ? "Choose Another…" : "Choose Cover Art…"}
+              </Button>
+              {pendingArt && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  type="button"
+                  disabled={busy || applying}
+                  onClick={() => setPendingArt(null)}
+                >
+                  Clear
+                </Button>
+              )}
+            </div>
             <p className="text-xs text-muted-foreground">
-              {artworkCount === 0
-                ? "None of these tracks have cover art — this sets it."
-                : artworkCount === tracks.length
-                  ? "All tracks already have cover art — this replaces it."
-                  : `${artworkCount} of ${tracks.length} already have cover art — this replaces it.`}{" "}
-              Applies on its own, right away.
+              {pendingArt ? (
+                <>
+                  <span className="font-medium text-foreground">
+                    {basename(pendingArt)}
+                  </span>{" "}
+                  is staged for all {tracks.length} tracks — applies when you
+                  press Apply.
+                </>
+              ) : (
+                <>
+                  {artworkCount === 0
+                    ? "None of these tracks have cover art — this sets it."
+                    : artworkCount === tracks.length
+                      ? "All tracks already have cover art — this replaces it."
+                      : `${artworkCount} of ${tracks.length} already have cover art — this replaces it.`}{" "}
+                  Applies with the rest of your changes.
+                </>
+              )}
             </p>
           </div>
         </div>
@@ -239,11 +288,11 @@ export function BulkEditPanel({
           </AlertDialogContent>
         </AlertDialog>
         <div className="flex-1" />
-        <Button type="submit" size="sm" disabled={changed.length === 0 || busy || applying}>
+        <Button type="submit" size="sm" disabled={pending.length === 0 || busy || applying}>
           {applying
             ? "Applying…"
-            : changed.length > 0
-              ? `Apply ${changed.length === 1 ? FIELD_LABELS[changed[0]] : `${changed.length} Fields`} to ${tracks.length} Tracks`
+            : pending.length > 0
+              ? `Apply ${pending.length === 1 ? pending[0] : `${pending.length} Changes`} to ${tracks.length} Tracks`
               : "No Changes"}
         </Button>
       </div>

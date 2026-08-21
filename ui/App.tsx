@@ -761,7 +761,9 @@ export default function App() {
                   }
                   onSetArtwork={(path) => {
                     const ids = selectedTracks.map((t) => t.id);
-                    run(api.setArtwork(ids, path)).then((p) => {
+                    // Returned so the panel's Apply can await it and keep the
+                    // button in its "Applying…" state until the art lands.
+                    return run(api.setArtwork(ids, path)).then((p) => {
                       if (p) {
                         invalidateArtwork(ids);
                         applyPatch(p);
